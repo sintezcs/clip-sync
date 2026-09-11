@@ -122,6 +122,6 @@ class ScreenshotObserver(
         private const val M = "SS"
         private const val DEBOUNCE_MS = 800L
         private const val RECENT_THRESHOLD_SEC = 5L
-        private const val MAX_SIZE_BYTES = 20L * 1024 * 1024
+        private val MAX_SIZE_BYTES = com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES.toLong()
     }
 }

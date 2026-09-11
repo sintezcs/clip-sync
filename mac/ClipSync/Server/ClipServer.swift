@@ -17,7 +17,9 @@ final class ClipServer {
     private let pairing: PairingManager
     private let tokenStore: TokenStore
     private let hmacValidator: HMACValidator
-    private let tlsConfiguration: TLSConfiguration?
+    private let tlsConfiguration: TLSConfiguration
+    private let journal: ReplayJournal
+    private let onReady: @Sendable () async -> Void
     private var runTask: Task<Void, Never>?
     private let errorStore: ErrorStore
     let rateLimiter = RateLimiter()
@@ -28,8 +30,10 @@ final class ClipServer {
          pairing: PairingManager,
          tokenStore: TokenStore,
          hmacValidator: HMACValidator,
-         tlsConfiguration: TLSConfiguration? = nil,
-         errorStore: ErrorStore) {
+         tlsConfiguration: TLSConfiguration,
+         errorStore: ErrorStore,
+         journal: ReplayJournal? = nil,
+         onReady: @escaping @Sendable () async -> Void = {}) {
         self.config = config
         var logger = Logger(label: "clipsync.server")
         logger.logLevel = config.logLevel
@@ -41,6 +45,8 @@ final class ClipServer {
         self.hmacValidator = hmacValidator
         self.tlsConfiguration = tlsConfiguration
         self.errorStore = errorStore
+        self.journal = journal ?? ReplayJournal(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ClipSync/Replay", isDirectory: true))
+        self.onReady = onReady
     }
 
     /// Runs the server until it exits or throws. Propagates errors to the caller.
@@ -52,37 +58,33 @@ final class ClipServer {
             tokenStore: tokenStore,
             hmacValidator: hmacValidator,
             rateLimiter: rateLimiter,
+            journal: journal,
             logger: logger
         )
 
-        let wsBuilder = HTTPServerBuilder.http1WebSocketUpgrade { [tokenStore, hub] request, _, logger in
+        let wsBuilder = HTTPServerBuilder.http1WebSocketUpgrade(configuration: .init(ws: .init(
+            maxFrameSize: 16 * 1024, autoPing: .enabled(timePeriod: .seconds(5)), closeTimeout: .seconds(3)))) { [tokenStore, hub] request, channel, logger in
             guard request.path == "/ws" else { return .dontUpgrade }
-            // Enforce Bearer auth on the WS upgrade handshake.
+            let epoch = await hub.registrationEpoch()
             let authHeader = request.headerFields[HTTPField.Name("Authorization")!]
-            guard let token = AuthMiddleware<BasicRequestContext>.extractBearer(authHeader),
-                  (try? await tokenStore.validate(tokenPlain: token)) != nil else {
-                logger.info("WS upgrade rejected: missing or invalid bearer")
-                return .dontUpgrade
-            }
+            guard let token = AuthMiddleware<ClipRequestContext>.extractBearer(authHeader),
+                  let record = try await tokenStore.validate(tokenPlain: token) else { return .dontUpgrade }
+            let remoteAddress = channel.remoteAddress?.ipAddress
             return .upgrade([:]) { inbound, outbound, _ in
-                let client = WebSocketHub.Client(outbound: outbound)
-                await hub.register(client)
+                let client = WebSocketHub.Client(tokenID: record.id, outbound: outbound, remoteAddress: remoteAddress)
+                guard await hub.register(client, expectedEpoch: epoch) else { return }
                 do {
-                    for try await _ in inbound { }
-                } catch {
-                    logger.debug("WebSocket ended: \(error)")
-                }
+                    // This socket is receive-only for clients; ping/pong are handled by the library.
+                    for try await _ in inbound {
+                        try await outbound.close(.policyViolation, reason: "Use authenticated POST /inject")
+                        break
+                    }
+                } catch { logger.debug("WebSocket ended") }
                 await hub.unregister(client)
             }
         }
-
-        let serverBuilder: HTTPServerBuilder
-        if let tlsConfiguration {
-            serverBuilder = try .tls(wsBuilder, tlsConfiguration: tlsConfiguration)
-        } else {
-            serverBuilder = wsBuilder
-        }
-
+        let serverBuilder = try HTTPServerBuilder.tls(wsBuilder, tlsConfiguration: tlsConfiguration)
+        let onReady = self.onReady
         let app = Application(
             router: router,
             server: serverBuilder,
@@ -90,10 +92,11 @@ final class ClipServer {
                 address: .hostname(config.host, port: config.port),
                 serverName: "ClipSync"
             ),
+            onServerRunning: { _ in await onReady() },
             logger: logger
         )
         logger.info("ClipSync server starting on \(config.host):\(config.port)", metadata: [
-            "tls": .stringConvertible(tlsConfiguration != nil),
+            "tls": .stringConvertible(true),
         ])
         await hub.startPingLoop()
         try await app.runService()
@@ -142,6 +145,8 @@ final class ClipServer {
         Task { await hub.stop() }
     }
 
+    func revokeSessions(tokenID: String) async { await hub.revokeSessions(tokenID: tokenID) }
+
     private static let version = "0.1.1"
     private static let platform = "macos"
 
@@ -151,78 +156,77 @@ final class ClipServer {
                            tokenStore: TokenStore,
                            hmacValidator: HMACValidator,
                            rateLimiter: RateLimiter,
-                           logger: Logger) -> Router<BasicRequestContext> {
-        let router = Router()
-        router.add(middleware: RateLimitMiddleware<BasicRequestContext>(rateLimiter: rateLimiter))
-        router.add(middleware: AuthMiddleware<BasicRequestContext>(
-            tokenStore: tokenStore,
-            hmacValidator: hmacValidator
-        ))
+                           journal: ReplayJournal,
+                           logger: Logger) -> Router<ClipRequestContext> {
+        let router = Router(context: ClipRequestContext.self)
+        router.add(middleware: RateLimitMiddleware<ClipRequestContext>(rateLimiter: rateLimiter))
+        router.add(middleware: AuthMiddleware<ClipRequestContext>(tokenStore: tokenStore, hmacValidator: hmacValidator))
         router.get("/health") { _, _ -> HealthResponse in
             HealthResponse(ok: true, version: version, platform: platform)
         }
-        router.post("/inject") { request, context -> InjectResponse in
-            let sourceTag = request.headers[HTTPField.Name("X-ClipSync-Source")!]
-            // Decode manually instead of request.decode() — the default
-            // BasicRequestContext.maxUploadSize is 2 MB which is too small
-            // for images. AuthMiddleware already collected the body with its
-            // own (higher) limit, so we just re-collect the buffered bytes.
-            var req = request
-            let buffer = try await req.collectBody(upTo: 25 * 1024 * 1024)
-            let estimatedSize = buffer.readableBytes * 3 / 4
-            guard estimatedSize <= 20 * 1024 * 1024 else {
-                throw HTTPError(.contentTooLarge)
-            }
-            let payload: ClipPayload
+        router.post("/inject") { request, _ -> InjectResponse in
+            guard injector.isSyncEnabled else { throw HTTPError(.serviceUnavailable, message: "Sync paused") }
+            guard let token = AuthMiddleware<ClipRequestContext>.extractBearer(request.headers[.authorization]),
+                  try await tokenStore.validate(tokenPlain: token) != nil else { throw HTTPError(.unauthorized) }
+            var request = request
+            let buffer = try await request.collectBody(upTo: ClipPayload.maxJSONBytes)
+            let raw = Data(buffer: buffer)
+            let prepared: PreparedClip
             do {
-                payload = try JSONDecoder().decode(ClipPayload.self, from: buffer)
-                try payload.validate()
-            } catch {
-                context.logger.warning("inject decode/validate failed: \(error)")
-                throw HTTPError(.badRequest, message: String(describing: error))
+                prepared = try await Task.detached(priority: .userInitiated) {
+                    try ClipPayload.decodePrepared(raw)
+                }.value
+            } catch { throw HTTPError(.badRequest, message: "Invalid clipboard payload") }
+            let payload = prepared.payload
+            guard injector.isSyncEnabled else { throw HTTPError(.serviceUnavailable, message: "Sync paused") }
+            let decision: ReplayDecision
+            do { decision = try await journal.accept(peer: token, nonce: payload.nonce, payload: raw) }
+            catch { throw HTTPError(.serviceUnavailable, message: "Replay protection unavailable") }
+            switch decision {
+            case .duplicate: return InjectResponse(ok: true, nonce: payload.nonce, applied: false)
+            case .conflict: throw HTTPError(.conflict, message: "Event identity conflict")
+            case .accepted: break
             }
-            context.logger.info("inject received", metadata: [
-                "source": .string(sourceTag ?? "unknown"),
-                "type": .string(payload.type.rawValue),
-                "nonce": .string(payload.nonce),
-            ])
+            guard let record = try await tokenStore.validate(tokenPlain: token) else { throw HTTPError(.unauthorized) }
             do {
-                // NSPasteboard must be driven from the main thread; dispatch explicitly
-                // even though Apple marks it as thread-safe, calling it from an NIO
-                // event-loop thread in a .accessory menu-bar app returns false silently.
-                try await MainActor.run { try injector.inject(payload) }
-            } catch {
-                context.logger.error("inject failed: \(error)")
-                throw HTTPError(.badRequest, message: String(describing: error))
+                try await MainActor.run {
+                    try tokenStore.withAuthorization(id: record.id) { try injector.inject(prepared) }
+                }
             }
+            catch TokenStoreError.unauthorized { throw HTTPError(.unauthorized) }
+            catch PasteboardInjectionError.paused { throw HTTPError(.serviceUnavailable, message: "Sync paused") }
+            catch PasteboardInjectionError.superseded { throw HTTPError(.conflict, message: "Newer local clipboard item") }
+            catch { throw HTTPError(.badRequest, message: "Clipboard write failed") }
             await hub.broadcast(payload)
-            return InjectResponse(ok: true, nonce: payload.nonce)
+            return InjectResponse(ok: true, nonce: payload.nonce, applied: true)
         }
-        router.get("/pair") { request, context -> PairingResponse in
-            let clientIP = request.headers[HTTPField.Name("X-Forwarded-For")!] ?? "unknown"
-            guard await rateLimiter.allow(key: "pair:\(clientIP)", maxRequests: 5, windowSeconds: 60) else {
-                throw HTTPError(.tooManyRequests)
-            }
-            guard let raw = request.uri.queryParameters["code"] else {
-                throw HTTPError(.badRequest, message: "missing code")
-            }
-            let code = String(raw)
+        router.get("/pair") { request, _ -> PairingResponse in
+            guard let code = request.uri.queryParameters["code"], code.count == 6 else { throw HTTPError(.badRequest) }
             do {
-                let response = try await pairing.consume(code: code)
-                // Register the issued token in TokenStore so subsequent requests
-                // can authenticate with `Authorization: Bearer <token>`.
-                let deviceLabel = request.headers[HTTPField.Name("X-ClipSync-Device")!] ?? "paired-device"
-                _ = try await tokenStore.register(tokenPlain: response.token, deviceLabel: deviceLabel)
+                let generation = try await tokenStore.issuanceGeneration()
+                let response = try await pairing.consume(code: String(code))
+                _ = try await tokenStore.register(tokenPlain: response.token, deviceLabel: "Personal phone", issuanceGeneration: generation)
                 return response
-            } catch let error as PairingError {
-                context.logger.info("pair rejected", metadata: [
-                    "reason": .string(String(describing: error)),
-                ])
-                throw HTTPError(.unauthorized, message: String(describing: error))
-            } catch {
-                context.logger.error("pair failed: \(error)")
-                throw HTTPError(.internalServerError, message: String(describing: error))
-            }
+            } catch TokenStoreError.unauthorized { throw HTTPError(.unauthorized, message: "Pairing canceled") }
+            catch PairingError.rateLimited { throw HTTPError(.tooManyRequests) }
+            catch is PairingError { throw HTTPError(.unauthorized, message: "Pairing unavailable or invalid") }
+            catch { throw HTTPError(.serviceUnavailable, message: "Secure pairing storage unavailable") }
+        }
+        router.post("/pair") { request, _ -> PairingResponse in
+            var request = request
+            let body = try await request.collectBody(upTo: 1024)
+            struct SecretRequest: Decodable { let secret: String }
+            guard let candidate = try? JSONDecoder().decode(SecretRequest.self, from: body),
+                  candidate.secret.utf8.count == 43 else { throw HTTPError(.badRequest) }
+            do {
+                let generation = try await tokenStore.issuanceGeneration()
+                let response = try await pairing.consume(secret: candidate.secret)
+                _ = try await tokenStore.register(tokenPlain: response.token, deviceLabel: "Personal phone", issuanceGeneration: generation)
+                return response
+            } catch TokenStoreError.unauthorized { throw HTTPError(.unauthorized, message: "Pairing canceled") }
+            catch PairingError.rateLimited { throw HTTPError(.tooManyRequests) }
+            catch is PairingError { throw HTTPError(.unauthorized, message: "Pairing unavailable or invalid") }
+            catch { throw HTTPError(.serviceUnavailable, message: "Secure pairing storage unavailable") }
         }
         return router
     }
@@ -236,6 +240,8 @@ final class ClipServer {
     struct InjectResponse: ResponseEncodable, Sendable {
         let ok: Bool
         let nonce: String
+        /// Duplicate acknowledgement means previously accepted, not proof of application after a crash.
+        let applied: Bool
     }
 
     private static func logStartupError(

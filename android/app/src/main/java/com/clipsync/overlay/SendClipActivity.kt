@@ -10,6 +10,7 @@ import android.os.Looper
 import com.clipsync.util.L
 import android.view.View
 import android.widget.Toast
+import com.clipsync.images.SharedImageReader
 import com.clipsync.model.ClipPayloadBuilder
 import com.clipsync.storage.Prefs
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +55,7 @@ class SendClipActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        if (savedInstanceState != null) { toast("Send interrupted; try again if needed"); finish(); return }
         isAutoSend = intent.getBooleanExtra(EXTRA_AUTO_SEND, false)
 
         // A real (transparent) content view is required so the window is
@@ -86,12 +88,13 @@ class SendClipActivity : Activity() {
 
     private fun sendClipboard() {
         val prefs = Prefs(applicationContext)
-        if (!prefs.hasPairing() || prefs.pairingSecret.isNullOrEmpty()) {
+        if (!prefs.hasPairing() || prefs.host.isNullOrEmpty() || prefs.pairingSecret.isNullOrEmpty()) {
             toast("Pair ClipSync first")
             finish()
             return
         }
 
+        if (!prefs.syncEnabled) { toast("Sync is paused"); finish(); return }
         val host = prefs.host!!
         val port = prefs.port
         val token = prefs.token!!
@@ -106,8 +109,15 @@ class SendClipActivity : Activity() {
             return
         }
 
+        if (clip.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true) {
+            toast("Sensitive clipboard content is excluded")
+            finish()
+            return
+        }
         val item = clip.getItemAt(0)
-        val mimeType = clip.description?.getMimeType(0) ?: ""
+        val mimeType = (0 until clip.description.mimeTypeCount).map(clip.description::getMimeType)
+            .firstOrNull { it.startsWith("image/") && item.uri != null }
+            ?: if (clip.description.mimeTypeCount > 0) clip.description.getMimeType(0) else ""
 
         when {
             // Check image MIME first — some clips have both URI and text
@@ -121,33 +131,30 @@ class SendClipActivity : Activity() {
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {
                         try {
-                            val stream = contentResolver.openInputStream(uri)
-                                ?: return@withContext ClipSender.Result.Failed("Can't open image")
-                            val bytes = stream.use { it.readBytes() }
-                            if (bytes.size > ClipPayloadBuilder.MAX_IMAGE_BYTES) {
-                                return@withContext ClipSender.Result.Failed("Image too large")
-                            }
-                            val mime = contentResolver.getType(uri) ?: mimeType
-                            val payload = ClipPayloadBuilder.image(mime, bytes)
-                            sender.send(host, port, token, secret, fp, payload)
-                        } catch (t: Throwable) {
-                            ClipSender.Result.Failed(t.message ?: "read error")
+                            val image = SharedImageReader.read(contentResolver, uri)
+                            val payload = ClipPayloadBuilder.image(image.mime, image.bytes)
+                            sender.sendCancellable(host, port, token, secret, fp, payload, isCurrent = { prefs.syncEnabled && prefs.token == token && prefs.fp == fp })
+                        } catch (t: kotlinx.coroutines.CancellationException) { throw t
+                        } catch (t: Exception) {
+                            ClipSender.Result.Failed("Unsupported, inaccessible or oversized image")
                         }
                     }
                     handleResult(result)
                 }
             }
             mimeType.startsWith("text/") || item.text != null -> {
-                val text = item.coerceToText(this)?.toString()
+                val text = item.text?.toString()
                 if (text.isNullOrEmpty()) {
                     toast("Empty clipboard")
                     finish()
                     return
                 }
-                val payload = ClipPayloadBuilder.text(text)
+                val payload = try { ClipPayloadBuilder.text(text) } catch (_: IllegalArgumentException) {
+                    toast("Text is too large"); finish(); return
+                }
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {
-                        sender.send(host, port, token, secret, fp, payload)
+                        sender.sendCancellable(host, port, token, secret, fp, payload, isCurrent = { prefs.syncEnabled && prefs.token == token && prefs.fp == fp })
                     }
                     handleResult(result)
                 }

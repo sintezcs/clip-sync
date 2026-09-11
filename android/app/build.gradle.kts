@@ -64,6 +64,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    implementation("androidx.window:window:1.3.0")
 
     debugImplementation(libs.androidx.ui.tooling)
 
@@ -71,4 +72,13 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation(libs.okhttp.mockwebserver)
+    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

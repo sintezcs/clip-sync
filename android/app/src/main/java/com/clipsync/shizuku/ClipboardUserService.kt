@@ -2,6 +2,11 @@ package com.clipsync.shizuku
 
 import android.content.ClipData
 import android.os.IBinder
+import android.os.Bundle
+import android.os.ParcelFileDescriptor
+import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import com.clipsync.util.L
 import java.lang.reflect.Method
 import rikka.shizuku.SystemServiceHelper
@@ -24,6 +29,53 @@ class ClipboardUserService : IClipUserService.Stub() {
         val stubClass = Class.forName("android.content.IClipboard\$Stub")
         val asInterface = stubClass.getMethod("asInterface", IBinder::class.java)
         asInterface.invoke(null, binder)!!
+    }
+
+    private val imagePermit = Semaphore(1)
+    private val imageWorker = Executors.newSingleThreadExecutor()
+    private val timeoutWorker = Executors.newSingleThreadScheduledExecutor()
+
+    override fun getClipboardSnapshot(): Bundle = ClipboardSnapshot.fromClip(getPrimaryClipOrThrow()).toBundle()
+
+    /** Opens only the current clipboard image, never a caller-supplied URI/path. */
+    override fun openClipboardImage(expectedIdentity: String): ParcelFileDescriptor {
+        val snapshot = ClipboardSnapshot.fromClip(getPrimaryClipOrThrow())
+        require(snapshot.identity == expectedIdentity && !snapshot.sensitive) { "Clipboard changed" }
+        require(snapshot.mime in setOf("image/png", "image/jpeg", "image/heic", "image/heif")) { "Unsupported clipboard image" }
+        val uri = requireNotNull(snapshot.uri)
+        require(android.net.Uri.parse(uri).scheme == "content") { "Only content images are supported" }
+        check(imagePermit.tryAcquire()) { "Image read already in progress" }
+        val pipe = try { ParcelFileDescriptor.createReliablePipe() } catch (e: Exception) {
+            imagePermit.release(); throw e
+        }
+        imageWorker.execute {
+            var process: Process? = null
+            var timeout: java.util.concurrent.ScheduledFuture<*>? = null
+            try {
+                // The shell content tool acquires the provider under the same shell UID
+                // that received the clipboard grant. No shell interpolation is used.
+                process = ProcessBuilder("/system/bin/content", "read", "--uri", uri)
+                    .redirectError(ProcessBuilder.Redirect.to(java.io.File("/dev/null"))).start()
+                val running = process
+                timeout = timeoutWorker.schedule({
+                    runCatching { pipe[1].closeWithError("Image read timed out") }
+                    running.destroyForcibly()
+                }, 10, TimeUnit.SECONDS)
+                val bytes = running.inputStream.use {
+                    com.clipsync.model.ClipPayloadBuilder.readBounded(it, com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES)
+                }
+                check(running.waitFor() == 0) { "Clipboard provider denied image access" }
+                ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { it.write(bytes) }
+            } catch (e: Exception) {
+                runCatching { pipe[1].closeWithError("Clipboard image unavailable") }
+            } finally {
+                timeout?.cancel(false)
+                process?.destroyForcibly()
+                runCatching { pipe[1].close() }
+                imagePermit.release()
+            }
+        }
+        return pipe[0]
     }
 
     override fun getClipboardText(): String? {
@@ -66,6 +118,8 @@ class ClipboardUserService : IClipUserService.Stub() {
     }
 
     override fun destroy() {
+        imageWorker.shutdownNow()
+        timeoutWorker.shutdownNow()
         System.exit(0)
     }
 
@@ -83,7 +137,25 @@ class ClipboardUserService : IClipUserService.Stub() {
             .filter { it.name == name }
             .maxByOrNull { it.parameterCount }
         if (m == null) L.error(M, "Method $name not found on IClipboard")
+        if (m != null) {
+            val types = m.parameterTypes
+            check(types.all { it == String::class.java || it == Int::class.javaPrimitiveType || it == ClipData::class.java }) {
+                "Unsupported clipboard API signature"
+            }
+            check(types.count { it == String::class.java } in 1..2 && types.count { it == Int::class.javaPrimitiveType } <= 2) {
+                "Unsupported clipboard API signature"
+            }
+        }
         return m
+    }
+
+    private fun getPrimaryClipOrThrow(): ClipData? {
+        val method = getMethod ?: error("Unsupported clipboard API")
+        return try {
+            method.invoke(clipboard, *buildArgs(method, firstArg = PACKAGE)) as? ClipData
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw IllegalStateException("Clipboard access unavailable", e.cause)
+        }
     }
 
     private fun getPrimaryClip(): ClipData? {

@@ -45,6 +45,17 @@
 		A00000000000000000002502 /* TailscaleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000002501 /* TailscaleHelper.swift */; };
 		A00000000000000000002504 /* TailscaleWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000002503 /* TailscaleWindow.swift */; };
 		A00000000000000000002602 /* ErrorState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000002601 /* ErrorState.swift */; };
+		A5E29CBC0E0BB514A75D93CE /* ClipImageSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = 760B26575EEA8C8909E13ED3 /* ClipImageSafety.swift */; };
+		DA31085F2D64784AEFBC10A4 /* ClipboardChangeOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 427C04A102E4FE4B3B9E5CA9 /* ClipboardChangeOrder.swift */; };
+		2563306275B46FDAD6476A38 /* ReplayJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5466DF2F84E4756846529C /* ReplayJournal.swift */; };
+		403FEB13D87D3506FC826251 /* ReplayJournalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A99B4E9EBE637D344929BBD /* ReplayJournalTests.swift */; };
+		8FA35F57492F7459957E2088 /* PairingHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1503666CD0C61AF186126FCB /* PairingHardeningTests.swift */; };
+		16046894BC7B5C40EB7E1A51 /* RateLimiterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB954B0F975A7BA0798E9902 /* RateLimiterTests.swift */; };
+		FDC8CCDF853C7E6080B4B7E8 /* NativeBridgeE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6876A463174835500240519D /* NativeBridgeE2ETests.swift */; };
+		4141161A6DA94B29CD9E3E99 /* AuthorizationGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D649838BE794C3F2C18A158 /* AuthorizationGateTests.swift */; };
+		13E2D214934D71C1584B4698 /* ClipServerRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB1CD247720A075252B394A /* ClipServerRouteTests.swift */; };
+		4535AE3D5365A7A83159B0F1 /* PairingWindowVisualTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5789688B432C42682DD1C1FE /* PairingWindowVisualTests.swift */; };
+		65BB5C0370C8D5C135035F7F /* InitialPairingPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A36037D7DB8945FD82A362F /* InitialPairingPolicyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -94,6 +105,17 @@
 		A00000000000000000002501 /* TailscaleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleHelper.swift; sourceTree = "<group>"; };
 		A00000000000000000002503 /* TailscaleWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailscaleWindow.swift; sourceTree = "<group>"; };
 		A00000000000000000002601 /* ErrorState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorState.swift; sourceTree = "<group>"; };
+		760B26575EEA8C8909E13ED3 /* ClipImageSafety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSync/Clipboard/ClipImageSafety.swift"; sourceTree = SOURCE_ROOT; };
+		427C04A102E4FE4B3B9E5CA9 /* ClipboardChangeOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSync/Clipboard/ClipboardChangeOrder.swift"; sourceTree = SOURCE_ROOT; };
+		FE5466DF2F84E4756846529C /* ReplayJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSync/Security/ReplayJournal.swift"; sourceTree = SOURCE_ROOT; };
+		5A99B4E9EBE637D344929BBD /* ReplayJournalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/ReplayJournalTests.swift"; sourceTree = SOURCE_ROOT; };
+		1503666CD0C61AF186126FCB /* PairingHardeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/PairingHardeningTests.swift"; sourceTree = SOURCE_ROOT; };
+		DB954B0F975A7BA0798E9902 /* RateLimiterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/RateLimiterTests.swift"; sourceTree = SOURCE_ROOT; };
+		6876A463174835500240519D /* NativeBridgeE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/NativeBridgeE2ETests.swift"; sourceTree = SOURCE_ROOT; };
+		7D649838BE794C3F2C18A158 /* AuthorizationGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/AuthorizationGateTests.swift"; sourceTree = SOURCE_ROOT; };
+		8CB1CD247720A075252B394A /* ClipServerRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/ClipServerRouteTests.swift"; sourceTree = SOURCE_ROOT; };
+		5789688B432C42682DD1C1FE /* PairingWindowVisualTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/PairingWindowVisualTests.swift"; sourceTree = SOURCE_ROOT; };
+		6A36037D7DB8945FD82A362F /* InitialPairingPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ClipSyncTests/InitialPairingPolicyTests.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -170,6 +192,8 @@
 		A00000000000000000000500 /* Clipboard */ = {
 			isa = PBXGroup;
 			children = (
+				427C04A102E4FE4B3B9E5CA9 /* ClipboardChangeOrder.swift */,
+				760B26575EEA8C8909E13ED3 /* ClipImageSafety.swift */,
 				A00000000000000000000501 /* ClipPayload.swift */,
 				A00000000000000000000503 /* PasteboardWatcher.swift */,
 				A00000000000000000000505 /* PasteboardInjector.swift */,
@@ -180,6 +204,14 @@
 		A00000000000000000000700 /* ClipSyncTests */ = {
 			isa = PBXGroup;
 			children = (
+				6A36037D7DB8945FD82A362F /* InitialPairingPolicyTests.swift */,
+				5789688B432C42682DD1C1FE /* PairingWindowVisualTests.swift */,
+				8CB1CD247720A075252B394A /* ClipServerRouteTests.swift */,
+				7D649838BE794C3F2C18A158 /* AuthorizationGateTests.swift */,
+				6876A463174835500240519D /* NativeBridgeE2ETests.swift */,
+				DB954B0F975A7BA0798E9902 /* RateLimiterTests.swift */,
+				1503666CD0C61AF186126FCB /* PairingHardeningTests.swift */,
+				5A99B4E9EBE637D344929BBD /* ReplayJournalTests.swift */,
 				A00000000000000000001F01 /* AuthMiddlewareTests.swift */,
 				A00000000000000000001701 /* BonjourAdvertiserTests.swift */,
 				A00000000000000000000703 /* ClipPayloadTests.swift */,
@@ -235,6 +267,7 @@
 		A00000000000000000001800 /* Security */ = {
 			isa = PBXGroup;
 			children = (
+				FE5466DF2F84E4756846529C /* ReplayJournal.swift */,
 				A00000000000000000001801 /* TLSManager.swift */,
 				A00000000000000000001901 /* HMACValidator.swift */,
 			);
@@ -353,6 +386,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2563306275B46FDAD6476A38 /* ReplayJournal.swift in Sources */,
+				DA31085F2D64784AEFBC10A4 /* ClipboardChangeOrder.swift in Sources */,
+				A5E29CBC0E0BB514A75D93CE /* ClipImageSafety.swift in Sources */,
 				A000000000000000000000F2 /* App.swift in Sources */,
 				A00000000000000000001B02 /* AuthMiddleware.swift in Sources */,
 				A00000000000000000001002 /* BonjourAdvertiser.swift in Sources */,
@@ -382,6 +418,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				65BB5C0370C8D5C135035F7F /* InitialPairingPolicyTests.swift in Sources */,
+				4535AE3D5365A7A83159B0F1 /* PairingWindowVisualTests.swift in Sources */,
+				13E2D214934D71C1584B4698 /* ClipServerRouteTests.swift in Sources */,
+				4141161A6DA94B29CD9E3E99 /* AuthorizationGateTests.swift in Sources */,
+				FDC8CCDF853C7E6080B4B7E8 /* NativeBridgeE2ETests.swift in Sources */,
+				16046894BC7B5C40EB7E1A51 /* RateLimiterTests.swift in Sources */,
+				8FA35F57492F7459957E2088 /* PairingHardeningTests.swift in Sources */,
+				403FEB13D87D3506FC826251 /* ReplayJournalTests.swift in Sources */,
 				A00000000000000000001F02 /* AuthMiddlewareTests.swift in Sources */,
 				A00000000000000000001702 /* BonjourAdvertiserTests.swift in Sources */,
 				A00000000000000000000704 /* ClipPayloadTests.swift in Sources */,

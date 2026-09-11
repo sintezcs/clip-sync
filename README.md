@@ -1,272 +1,130 @@
 <div align="center">
   <img src="docs/screenshots/logo.png" width="128" alt="ClipSync logo" />
-  <h1>ClipSync</h1>
-  <p>Real-time clipboard sync between macOS and Android — over LAN or Tailscale.</p>
+  <h1>ClipSync — native Mac + Android fork</h1>
+  <p>Clipboard text and images between an awake Mac and Android over a private network.</p>
 </div>
 
----
+This [sintezcs fork](https://github.com/sintezcs/clip-sync) develops the native Swift/macOS and Kotlin/Android applications from [2cristo7/clip-sync](https://github.com/2cristo7/clip-sync). It focuses on explicit pairing trust, predictable clipboard behavior and an adaptive Android interface for One UI and foldable screens.
 
-## Install
-
-```bash
-# macOS — one-liner
-curl -fsSL https://raw.githubusercontent.com/2cristo7/clip-sync/main/install.sh | bash
-```
-
-Download the Android APK from the [latest release](https://github.com/2cristo7/clip-sync/releases/latest).
-
-→ Full install guide (manual DMG, APK sideload, Gatekeeper bypass): **[docs/quick-start.md](docs/quick-start.md)**
-
----
+**The hardened fork has no published binary yet.** Build the current source locally. Upstream releases, old screenshots and historical installation guides do not represent this implementation. The repository's release installer is not a substitute for a verified build of this branch.
 
 ## What it does
 
-- **Text, bidirectional** — copy text on the Mac and it lands in the Android clipboard instantly, and vice versa.
-- **Images from Mac to Android** — copy an image or screenshot on the Mac (⌘+Ctrl+Shift+4) and it appears in the Android clipboard, ready to paste anywhere.
-- **Screenshots, bidirectional** — take a screenshot on Android and it is sent to the Mac clipboard automatically. Take one on the Mac and it goes to Android.
-- **Share to Mac** — a "Mac" button appears in the Android share sheet. Tap it to send any file or photo directly to the Mac; it is saved in `Documents/ClipSync/` and copied to the Mac clipboard. A confirmation alert appears on the Mac with an **Open in Finder** button to reveal the saved file immediately.
+- Synchronizes clipboard text and supported images (PNG/JPEG, plus Android9+ HEIC/HEIF converted to PNG) in both directions when the devices are connected and clipboard access is ready.
+- Provides an explicit Android share target for a single text or supported image item.
+- Shows connection, pairing, notification and Shizuku readiness separately, with compact and expanded Android layouts, dark/light themes and larger-text support.
+- Supports pause, disconnect and pairing removal on Android, and pause and paired-device revocation from the Mac menu bar.
+- Finds nearby Macs through Bonjour/mDNS and accepts a manually entered reachable address, including a private VPN address.
 
----
+Automatic Android clipboard access uses a Shizuku helper started through wireless debugging or ADB. It does not require root or replacing your keyboard. Android background clipboard restrictions still apply when the helper is unavailable; the UI exposes readiness and explicit actions instead of claiming background access works.
 
-## Features
+There is no screenshot monitoring or background screenshot capture. Generic file transfer and automatic saving of received files into Documents are removed. A screenshot explicitly copied to the clipboard can travel as a supported image, just like another clipboard image.
 
-- **Auto-discovery** — mDNS/Bonjour on LAN; manual IP for Tailscale
-- **Secure channel** — self-signed TLS with SPKI fingerprint pinning (TOFU)
-- **Authenticated payloads** — Bearer token + HMAC-SHA256 on every request
-- **Persistent connection** — Android foreground service with automatic reconnection
-- **Neumorphic UI** — clean dark/light Android interface
-- **Tailscale support** — works over WireGuard tunnels when away from home
+## Set up a local build
 
----
+Requirements:
 
-## Screenshots
+| Component | Requirement |
+| --- | --- |
+| Mac runtime | macOS 14 or newer; awake and reachable while syncing |
+| Mac development | Xcode 26.3; command-scoped `DEVELOPER_DIR`; deployment target 14.0 |
+| Android runtime | App minimum Android 8/API 26; background helper support depends on device and Shizuku readiness |
+| Android development | JDK 17 and the Android SDK; Gradle wrapper included |
+| Network | Private LAN or reachable private VPN connection; no public port forwarding required |
 
-### macOS
-
-<table>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/mac-menu-bar.png" width="200" alt="Menu bar" /><br/>
-      <sub>Menu bar</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/mac-pair-device.png" width="200" alt="Pair Device — QR + 6-digit code" /><br/>
-      <sub>Pair Device</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/mac-tailscale-connected.png" width="200" alt="Tailscale connected" /><br/>
-      <sub>Tailscale connected</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/mac-tailscale-disconnected.png" width="200" alt="Tailscale VPN off" /><br/>
-      <sub>Tailscale VPN off</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/mac-file-saved-alert.png" width="200" alt="File saved alert — Show in Finder" /><br/>
-      <sub>File saved alert</sub>
-    </td>
-  </tr>
-</table>
-
-### Android — WiFi (LAN auto-discovery)
-
-<table>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/android-settings-light.png" width="200" alt="Settings — light" /><br/>
-      <sub>Light mode</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/android-settings-dark.png" width="200" alt="Settings — dark" /><br/>
-      <sub>Dark mode</sub>
-    </td>
-  </tr>
-</table>
-
-### Android — Tailscale (VPN, manual IP)
-
-<table>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/android-tailscale-light.png" width="200" alt="Tailscale connected — light" /><br/>
-      <sub>Connected — light</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/android-tailscale-dark.png" width="200" alt="Tailscale connected — dark" /><br/>
-      <sub>Connected — dark</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/android-tailscale-manual-light.png" width="200" alt="Manual IP entry — light" /><br/>
-      <sub>Manual IP — light</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/android-tailscale-manual-dark.png" width="200" alt="Manual IP entry — dark" /><br/>
-      <sub>Manual IP — dark</sub>
-    </td>
-  </tr>
-</table>
-
----
-
-## How it works
-
-### Pairing — one time setup
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as You
-    participant M as 🖥️ Mac
-    participant A as 📱 Android
-
-    U->>M: Start Pairing…
-    M->>M: Generate 6-digit code (5 min TTL)
-    M-->>U: Show QR code
-    U->>A: Scan QR with camera
-    A->>M: GET /pair?code=123456
-    M-->>A: bearer token + HMAC secret + TLS fingerprint
-    Note over M,A: Secrets stored in Keychain / EncryptedSharedPreferences
-```
-
-### Clipboard sync — every copy
-
-```mermaid
-sequenceDiagram
-    participant M as 🖥️ Mac
-    participant A as 📱 Android
-
-    note over M: Mac → Android
-    M->>M: PasteboardWatcher detects copy
-    M->>A: WebSocket push · payload signed with HMAC-SHA256
-    A->>A: Write to clipboard
-
-    note over A: Android → Mac
-    A->>A: Clipboard listener fires (Shizuku)
-    A->>M: POST /inject · Bearer token + HMAC-SHA256
-    M->>M: PasteboardInjector writes to clipboard
-```
-
-> **Transport:** TLS with SPKI pinning (TOFU) — LAN via mDNS · remote via Tailscale IP
-
----
-
-## Requirements
-
-| Platform | Minimum    | Tested with         |
-|----------|-----------|---------------------|
-| macOS    | 14.0      | Xcode 26, Swift 5.9 |
-| Android  | 13 (API 33)| AGP 8.x, Kotlin 1.9 |
-
----
-
-## Quick start
-
-See **[docs/build-from-source.md](docs/build-from-source.md)** for the full guide, including code-signing setup, Shizuku (for auto clipboard read), and Tailscale.
-
-**macOS — build & run**
+Build the Mac application from the repository root:
 
 ```bash
-# 1. Set up code signing (one-time)
-bash mac/scripts/setup-signing.sh
-
-# 2. Build
-xcodebuild \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build \
   -project mac/ClipSync.xcodeproj \
   -scheme ClipSync \
   -configuration Debug \
-  -derivedDataPath mac/build \
-  build
-
-# 3. Launch
-open mac/build/Build/Products/Debug/ClipSync.app
+  -destination 'platform=macOS' \
+  -derivedDataPath build/mac-local \
+  -onlyUsePackageVersionsFromResolvedFile \
+  MACOSX_DEPLOYMENT_TARGET=14.0 ONLY_ACTIVE_ARCH=YES \
+  DEVELOPMENT_TEAM='' CODE_SIGN_IDENTITY=- \
+  CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES ENABLE_HARDENED_RUNTIME=NO
 ```
 
-**Android — build APK**
+Use a fresh `build/mac-local` directory that has never held test builds. The app is at `build/mac-local/Build/Products/Debug/ClipSync.app`. Opening it starts the actual menu-bar application and its clipboard/network functionality. This is a local ad hoc Debug build with a command-local runtime setting for development without a signing identity; the project's Release hardening remains enabled. It is not a distribution release. See [local packaging and signing](docs/development/native-verification.md#local-packaging-and-signing-boundary) before installation.
+
+Build Android:
 
 ```bash
 cd android
-./gradlew assembleDebug
-# APK: android/app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug
 ```
 
-Sideload the APK via `adb install` or transfer to the device.
+The APK is `android/app/build/outputs/apk/debug/app-debug.apk`, relative to the repository root. Transfer it to your device and install it, or select your intended device explicitly with ADB:
 
----
-
-## Repository structure
-
-```
-clip-sync/
-├── mac/                          macOS Swift app (Xcode project)
-│   ├── ClipSync/                 source code (17 Swift files)
-│   ├── ClipSyncTests/            unit tests (35 tests)
-│   └── scripts/
-│       ├── setup-signing.sh      code-signing helper
-│       └── build-release.sh      release build
-├── android/                      Android Kotlin app
-│   └── app/src/main/java/
-│       └── com/clipsync/         source code (22 Kotlin files)
-└── docs/
-    ├── build-from-source.md      full setup guide ← start here
-    ├── screenshots/              UI screenshots
-    ├── architecture/
-    │   ├── protocol.md           wire protocol reference
-    │   ├── security.md           security model
-    │   ├── threat-model.md       threat model
-    │   └── analisis-tecnico-profundo.pdf  deep analysis (Gemini)
-    ├── guides/
-    │   └── tailscale-setup.md    Tailscale-specific guide
-    ├── development/
-    │   └── TODO.md, plans, HANDOFF
-    └── phases/
-        └── phase-{1-9}-summary.md  development pipeline history
+```bash
+adb devices
+adb -s YOUR_DEVICE_SERIAL install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
----
+Run the ADB commands from the repository root and replace `YOUR_DEVICE_SERIAL` with the device you intend to modify. A build signed differently from an existing installation cannot update it in place; removing an installation also removes its local pairing state.
 
-## Security
+Install and start Shizuku using its manager's wireless-debugging or ADB setup, then grant ClipSync access in that manager. Shizuku normally needs starting again after a phone reboot. In ClipSync, enable the requested notification permission, check the displayed helper/clipboard readiness and enable synchronization. You can continue using your existing keyboard.
 
-ClipSync is designed for use on trusted networks or a private Tailscale tailnet. It is **not** intended for public internet exposure.
+## Pair with your Mac
 
-- TLS with self-signed certificate; SPKI fingerprint pinned on first connect (TOFU)
-- Every request carries a Bearer token and an HMAC-SHA256 of the payload body
-- Timestamps validated within ±60 s to prevent replay attacks
-- Secrets stored in macOS Keychain and Android EncryptedSharedPreferences
+1. On its first ready launch, an unpaired Mac offers the pairing window. You can also open it from the menu bar while both devices can reach each other. Dismissing it does not cause reconnects to reopen it.
+2. On Android, open the Mac's v2 QR link or enter the Mac address, port and six-digit code manually.
+3. Compare the **complete SPKI fingerprint** with the value on your trusted Mac's screen, then explicitly confirm pairing on Android.
+4. Check connection and clipboard readiness before testing with non-sensitive text.
 
-See [docs/architecture/security.md](docs/architecture/security.md) for the full security model.
+Discovery and a received link are not proof of identity. The fingerprint is verified before credentials are exchanged; there is no trust-on-first-use fallback. QR pairing uses a single-use random secret sent by pinned HTTPS POST. Manual pairing retains the code endpoint, also protected by the independently verified pin. Refreshing or closing the Mac pairing session invalidates its previous enrollment credentials.
 
----
+For a private VPN, enter the Mac's reachable VPN address manually; multicast discovery generally does not cross that connection. The Mac must remain awake and reachable. The app provides no cloud relay or durable offline-delivery queue.
 
-## Deep technical analysis
+## Native architecture and security
 
-[docs/architecture/analisis-tecnico-profundo.pdf](docs/architecture/analisis-tecnico-profundo.pdf) (also available as [Markdown](docs/architecture/analisis-tecnico-profundo.md)) is a detailed technical document covering every layer of ClipSync — discovery, pairing, TLS, HMAC, secret storage, Android clipboard restrictions, full data flows, and the threat model.
+```mermaid
+flowchart LR
+    MW[Mac pasteboard watcher] --> WS[Pinned authenticated WebSocket]
+    WS --> AH[Android clipboard helper]
+    AH --> POST[HTTPS POST with bearer and HMAC]
+    POST --> V[Mac validation and durable replay check]
+    V --> MP[Mac pasteboard injector]
+```
 
-It was produced by feeding the entire v0.1.0 source code to **Gemini Deep Research** with a structured prompt asking it to explain the system top-to-bottom, compare each design decision against the alternatives that were rejected, and evaluate the honest trade-offs of each choice. The document is written in Spanish and is aimed at a reader with a solid technical background who wants to understand not just *what* the code does but *why* each decision was made.
+The Mac runs a native menu-bar application and a TLS-only Hummingbird server. Android uses a foreground connection service, a privileged Shizuku clipboard helper and explicit user actions where background access is unavailable. A successful listener bind precedes advertisement; startup failures in TLS identity, secrets or token storage do not fall back to an insecure listener.
 
----
+Credentials use macOS Keychain and Android encrypted storage. Payloads have strict MIME, base64, byte-size, image-dimension, nonce and timestamp validation. Text is limited to 1 MiB, images to 50 MiB and 24 million pixels. Durable replay records are written before clipboard effects, and incoming echoes are checked before application. Revocation is checked at the actual Mac clipboard write.
 
-## Known limitations
+The devices need synchronized clocks. HTTP authentication timestamps permit less than 60 seconds of skew. Sends do not automatically retry: a lost response or cancellation can leave delivery unconfirmed. A durable acceptance record is not proof that the clipboard write completed; this is not an exactly-once delivery guarantee. See [the current protocol contract](docs/protocol-v2.md) for wire details, replay responses and limits.
 
-- mDNS auto-discovery does not work over Tailscale (no multicast in WireGuard). Use manual IP entry with the Mac's Tailscale IP (`100.x.x.x`).
-- Clipboard auto-send on Android requires Shizuku or an Accessibility Service (see [installation guide](docs/build-from-source.md#4-shizuku--automatic-clipboard-reading)).
-- Code signing and Gatekeeper notarization are not configured for distribution.
+## Development and verification
 
----
+Use the isolated harnesses from the repository root:
 
-## Contributing
+```bash
+./scripts/verify-macos.sh
+./scripts/verify-android.sh
+```
 
-Issues and improvement suggestions are welcome — feel free to [open one](https://github.com/2cristo7/clip-sync/issues).
+Read [native verification](docs/development/native-verification.md) and [Android verification](docs/development/android-verification.md) before running them. The Mac harness isolates build outputs and excludes the separately coordinated native bridge fixture by default. Clipboard tests use fake or uniquely named Mac pasteboards and synthetic data. The Android harness uses a dedicated audit emulator and checks its identity before installation or instrumentation.
 
----
+The tracked Swift package lockfile makes the resolved graph reviewable. Hosted tests avoid a separate `HummingbirdTesting` product dependency because it triggered broken dynamic package linking in Xcode; route tests use direct HTTP fixtures. The verification guide records the reproduced failure and remedy.
 
-> 🚧 **Multi-OS version in development.** A cross-platform Rust rewrite covering **Windows, Linux, macOS, and Android** is actively being built in two flavors:
-> - **Personal** — mesh any-to-any for users with 2–3 PCs + phone, friendly UI
-> - **Enterprise** — dedicated server + clients with admin dashboard, granular per-device policy, file broadcast
->
-> Roadmap and phase-by-phase plans live in [`docs/plans/`](docs/plans/). The current Mac + Android product on `main` (this README) remains the stable, supported release.
+The latest default Mac suite passed 94 tests, and the opt-in pairing-window visual test passed with QR/image review. Actual native text and PNG pixel checks passed in both directions on the audit emulator and a physical Fold over USB, with Android backgrounded and using Shizuku. Android has 89 passing JVM tests. The rich-text revision default instrumentation runner reported `OK (23 tests)` (17 executed checks and six opt-in skips); opt-in cases skipped in that run are not claimed as executed. Two real-Shizuku checks and the native bridge checks passed in their separate explicit runs. A separate normal-pairing LAN run also passed text and PNG both directions using the Mac system clipboard; a rich-text LAN regression failed before normalization and passed after it. The user confirmed Telegram text copy works. These checks do not establish daily-use reliability. The universal Mac Release build passed, but its ad hoc hardened-runtime launch failed library validation on macOS 15.7.5. A usable signing identity and release runtime verification remain open. A clean app-only Debug package passed signature checks, was installed and started after user-approved Keychain access; its LAN listener and Bonjour are live. Normal LAN pairing and synthetic clipboard validation are complete; The user confirmed Telegram and Gallery paste. HEIC conversion now emits PNG; exact-pixel HEIC-to-PNG and PNGs larger than the former 8 MiB limit passed actual LAN tests in both directions. The configured image cap is 50 MiB; this is not a claim that every 50 MiB image or slow network has been tested. Consult the [handoff](docs/handoff/android-implementation-progress.md) and [hardening plan](docs/plans/2026-09-11-fork-hardening.md) for scoped evidence rather than treating this README as a release certification.
 
----
+Physical One UI cover and unfolded inner-display review passed, along with four physical UI tests; the broader folding/rotation/accessibility matrix remains open. Remaining gates include normal LAN setup, the wider third-party image-provider matrix, accessibility/performance and a 48-hour soak. Battery and latency have not been measured. Android's WebSocket library can allocate incoming messages before application size validation; payload limits do not eliminate that allocation exposure. Release signing, notarization and a hardened binary release remain separate work.
 
-## License
+## Repository
 
-MIT — see [LICENSE](LICENSE).
+- `mac/` — native Swift app, TLS server, pairing, clipboard and XCTest sources.
+- `android/` — native Kotlin/Compose app, foreground service, Shizuku helper and tests.
+- `scripts/` — isolated native verification harnesses.
+- `docs/protocol-v2.md` — current native wire contract.
+- `docs/development/` and `docs/handoff/` — verification instructions and continuation evidence.
+- `docs/reviews/` — original audit and implementation reviews.
+
+Older architecture documents, release guides, screenshots and cross-platform rewrite plans remain historical references. They do not promise current generic-file transfer, screenshot automation, permissive pairing or a supported Rust product.
+
+## Contributing and license
+
+Report fork issues at [sintezcs/clip-sync](https://github.com/sintezcs/clip-sync/issues). Preserve upstream attribution and include relevant verification evidence with changes.
+
+MIT — see [LICENSE](LICENSE). Based on [2cristo7/clip-sync](https://github.com/2cristo7/clip-sync), with contributions by the ClipSync contributors and this fork.

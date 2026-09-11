@@ -11,6 +11,7 @@ final class MenuBarController: NSObject {
     private let onTailscale: () -> Void
     private let onToggleSync: () -> Void
     private let onQuit: () -> Void
+    private let onRevokeDevices: () -> Void
     private(set) var isSyncPaused = false
     private var refreshTask: Task<Void, Never>?
     private var currentClients: [ClipClientInfo] = []
@@ -21,6 +22,7 @@ final class MenuBarController: NSObject {
          onStartPairing: @escaping () -> Void,
          onTailscale: @escaping () -> Void,
          onToggleSync: @escaping () -> Void,
+         onRevokeDevices: @escaping () -> Void,
          onQuit: @escaping () -> Void) {
         self.hub = hub
         self.errorStore = errorStore
@@ -28,6 +30,7 @@ final class MenuBarController: NSObject {
         self.onTailscale = onTailscale
         self.onToggleSync = onToggleSync
         self.onQuit = onQuit
+        self.onRevokeDevices = onRevokeDevices
         super.init()
         errorStore.$errors
             .receive(on: DispatchQueue.main)
@@ -179,6 +182,9 @@ final class MenuBarController: NSObject {
             menu.addItem(syncItem)
         }
 
+        let revokeItem = NSMenuItem(title: "Remove Paired Devices…", action: #selector(handleRevokeDevices), keyEquivalent: "")
+        revokeItem.target = self
+        menu.addItem(revokeItem)
         let quitItem = NSMenuItem(
             title: "Quit ClipSync",
             action: #selector(handleQuit),
@@ -206,6 +212,15 @@ final class MenuBarController: NSObject {
 
     @objc private func handleToggleSync() {
         onToggleSync()
+    }
+
+    @objc private func handleRevokeDevices() {
+        let alert = NSAlert()
+        alert.messageText = "Remove paired devices?"
+        alert.informativeText = "Their connections will close and they must pair again before syncing."
+        alert.addButton(withTitle: "Remove Devices")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { onRevokeDevices() }
     }
 
     @objc private func handleQuit() {

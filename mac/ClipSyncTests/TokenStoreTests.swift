@@ -64,7 +64,7 @@ final class TokenStoreTests: XCTestCase {
 
     func testRegisterStoresHashNotPlaintext() async throws {
         try await skipIfNoKeychain {
-            let plain = "alpha-bravo-charlie"
+            let plain = Data(repeating: 11, count: 32).base64EncodedString()
             let rec = try await store.register(tokenPlain: plain, deviceLabel: "phone")
             XCTAssertNotEqual(rec.tokenHash, plain)
             XCTAssertEqual(rec.tokenHash, TokenStore.hashHex(plain))
@@ -80,5 +80,58 @@ final class TokenStoreTests: XCTestCase {
             let record = try await store2.validate(tokenPlain: plain)
             XCTAssertNotNil(record)
         }
+    }
+}
+
+
+final class TokenStoreFailureTests: XCTestCase {
+    func testCorruptStoragePreventsStartupAndIsNotOverwritten() async throws {
+        let storage = TestKeychainStorage()
+        storage.values["tokens"] = Data("not json".utf8)
+        let store = TokenStore(keychain: storage)
+        do { try await store.prepare(); XCTFail("Corrupt store accepted") } catch { }
+        do { _ = try await store.issue(deviceLabel: "test"); XCTFail("Failed store issued token") } catch { }
+        XCTAssertEqual(storage.saves, 0)
+        XCTAssertEqual(storage.values["tokens"], Data("not json".utf8))
+    }
+
+    func testFailedRegisterNeverAuthenticatesIssuedToken() async throws {
+        let storage = TestKeychainStorage()
+        storage.saveFailure = KeychainError.unexpectedStatus(-1)
+        let store = TokenStore(keychain: storage)
+        let token = Data(repeating: 9, count: 32).base64EncodedString()
+        do { _ = try await store.register(tokenPlain: token, deviceLabel: "test"); XCTFail("Write failure ignored") } catch { }
+        do { _ = try await store.validate(tokenPlain: token); XCTFail("Failed store authenticated") } catch { }
+        XCTAssertNil(storage.values["tokens"])
+    }
+
+    func testFailedRevokeLeavesDiskUnchangedAndFailsClosed() async throws {
+        let storage = TestKeychainStorage()
+        let store = TokenStore(keychain: storage)
+        let (id, token) = try await store.issue(deviceLabel: "test")
+        let saved = storage.values["tokens"]
+        storage.saveFailure = KeychainError.unexpectedStatus(-1)
+        do { try await store.revoke(id: id); XCTFail("Write failure ignored") } catch { }
+        XCTAssertEqual(storage.values["tokens"], saved)
+        do { _ = try await store.validate(tokenPlain: token); XCTFail("Failed store authenticated") } catch { }
+    }
+
+    func testRevokeAllPersistsBeforeNewInstanceLoads() async throws {
+        let storage = TestKeychainStorage()
+        let store = TokenStore(keychain: storage)
+        let (id, token) = try await store.issue(deviceLabel: "test")
+        let revoked = try await store.revokeAll()
+        XCTAssertEqual(revoked, [id])
+        let reloaded = TokenStore(keychain: storage)
+        let found = try await reloaded.validate(tokenPlain: token)
+        XCTAssertNil(found)
+    }
+
+    func testDuplicateRecordIDsFailWithoutDictionaryTrap() async throws {
+        let storage = TestKeychainStorage()
+        let record = TokenStore.Record(id: UUID().uuidString, tokenHash: String(repeating: "a", count: 64),
+            createdAt: Date(), lastSeenAt: Date(), deviceLabel: "test")
+        storage.values["tokens"] = try JSONEncoder().encode([record, record])
+        do { try await TokenStore(keychain: storage).prepare(); XCTFail("Duplicate accepted") } catch { }
     }
 }

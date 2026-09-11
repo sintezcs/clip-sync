@@ -3,28 +3,61 @@ package com.clipsync.overlay
 import com.clipsync.crypto.HmacSigner
 import com.clipsync.model.ClipPayload
 import com.clipsync.net.ClipClient
-import com.clipsync.util.L
+import com.clipsync.net.PairingApi
+import com.clipsync.sync.ClipboardEvents
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Call
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.RequestBody.Companion.toRequestBody
-import android.util.Base64
+import java.util.concurrent.TimeUnit
 
-/**
- * Posts a [ClipPayload] to the mac server's `POST /inject` endpoint.
- *
- * Authenticates with the Bearer token issued during pairing and signs the
- * body with HMAC-SHA256 using the pairing-secret. Uses
- * [ClipClient.pinnedClient] so TLS is pinned to the server's SPKI.
- */
+/** Serialized, single-attempt sends. Legacy Mac does not guarantee idempotent retry. */
 class ClipSender(
     private val clientFactory: ClipClient = ClipClient(),
     private val clockMs: () -> Long = { System.currentTimeMillis() }
 ) {
-
     sealed class Result {
         data object Ok : Result()
         data class Failed(val reason: String) : Result()
+    }
+
+    /** Cancellation closes an active socket; it cannot undo content already accepted by the Mac. */
+    suspend fun sendCancellable(
+        host: String,
+        port: Int,
+        token: String,
+        pairingSecretB64: String,
+        fpBase64Url: String,
+        payload: ClipPayload,
+        isCurrent: () -> Boolean = { true }
+    ): Result = suspendCancellableCoroutine { continuation ->
+        val cancellation = SendCancellation()
+        continuation.invokeOnCancellation { cancellation.cancel() }
+        Dispatchers.IO.dispatch(continuation.context, Runnable {
+            if (!continuation.isActive) return@Runnable
+            val result = runCatching {
+                send(host, port, token, pairingSecretB64, fpBase64Url, payload,
+                    isCurrent = { !cancellation.cancelled && isCurrent() }, cancellation = cancellation)
+            }
+            if (continuation.isActive) continuation.resumeWith(result)
+        })
+    }
+
+    /** Active call registration and cancellation are atomic, including cancellation before registration. */
+    class SendCancellation internal constructor() {
+        @Volatile var cancelled = false
+            private set
+        private var call: Call? = null
+        @Synchronized internal fun attach(next: Call) {
+            call = next
+            if (cancelled) next.cancel()
+        }
+        @Synchronized fun cancel() {
+            cancelled = true
+            call?.cancel()
+        }
     }
 
     fun send(
@@ -33,78 +66,49 @@ class ClipSender(
         token: String,
         pairingSecretB64: String,
         fpBase64Url: String,
-        payload: ClipPayload
-    ): Result {
-        val client = clientFactory.pinnedClient(host, fpBase64Url)
-        return post(client, "https://$host:$port/inject", token, pairingSecretB64, payload)
-    }
-
-    private fun post(
-        client: OkHttpClient,
-        url: String,
-        token: String,
-        pairingSecretB64: String,
-        payload: ClipPayload
-    ): Result {
-        val secret = try {
-            Base64.decode(pairingSecretB64, Base64.DEFAULT)
-        } catch (t: Throwable) {
-            return Result.Failed("invalid secret")
-        }
-        val body = payload.toJson()
-        val ts = clockMs() / 1000L
-        val sigHeader = HmacSigner.signatureHeader(secret, ts, body)
-
-        val req = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $token")
-            .header("X-ClipSync-Signature", sigHeader)
-            .header("X-ClipSync-Source", "android-fab")
-            .post(body.toRequestBody(JSON))
-            .build()
-
-        lastSentHash = payload.data.hashCode()
-        lastSentMs = System.currentTimeMillis()
-
-        var lastError: Throwable? = null
-        val backoffMs = longArrayOf(1000, 2000, 4000)
-
-        repeat(3) { attempt ->
-            try {
-                client.newCall(req).execute().use { resp ->
-                    if (resp.isSuccessful) return Result.Ok
-                    if (!isTransientHttp(resp.code)) {
-                        return Result.Failed("HTTP ${resp.code}: ${resp.body?.string()?.take(200) ?: "no body"}")
-                    }
-                    L.warn(M, "transient HTTP ${resp.code}, retry ${attempt + 1}/3")
-                }
-            } catch (t: Throwable) {
-                if (!isTransient(t)) {
-                    return Result.Failed(t.message ?: "network error")
-                }
-                lastError = t
-                L.warn(M, "transient error: ${t.message}, retry ${attempt + 1}/3")
+        payload: ClipPayload,
+        isCurrent: () -> Boolean = { true },
+        cancellation: SendCancellation? = null
+    ): Result = synchronized(sendLock) {
+        try {
+            if (cancellation?.cancelled == true || !isCurrent() || Thread.currentThread().isInterrupted) return@synchronized Result.Failed("Superseded or cancelled")
+            payload.validate(clockMs())
+            ClipClient.validateToken(token)
+            val secret = PairingApi.decodeSecret(pairingSecretB64)
+            val client = clientFactory.pinnedClient(host, fpBase64Url).newBuilder()
+                .callTimeout(callTimeoutSeconds(payload.data.length), TimeUnit.SECONDS).build()
+            val body = payload.toJson()
+            val request = Request.Builder().url(ClipClient.endpoint(host, port, "/inject"))
+                .header("Authorization", "Bearer $token")
+                .header("X-ClipSync-Signature", HmacSigner.signatureHeader(secret, clockMs() / 1000L, body))
+                .header("X-ClipSync-Source", "android-fab")
+                .post(body.toRequestBody(JSON)).build()
+            if (cancellation?.cancelled == true || !isCurrent() || Thread.currentThread().isInterrupted) return@synchronized Result.Failed("Superseded or cancelled")
+            ClipboardEvents.recordOutbound(payload, fpBase64Url)
+            // The journal may block on durable I/O; recheck supersession/cancellation after it commits.
+            if (cancellation?.cancelled == true || !isCurrent() || Thread.currentThread().isInterrupted) return@synchronized Result.Failed("Superseded or cancelled")
+            val call = client.newCall(request)
+            cancellation?.attach(call)
+            call.execute().use { response ->
+                if (response.isSuccessful) {
+                    lastSentHash = payload.data.hashCode()
+                    lastSentMs = clockMs()
+                    Result.Ok
+                } else Result.Failed("Send failed (HTTP ${response.code})")
             }
-            if (attempt < 2) {
-                Thread.sleep(backoffMs[attempt])
-            }
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Do not include peer response bodies or credentials in errors or logs.
+            Result.Failed("Send failed; delivery is unconfirmed")
         }
-        return Result.Failed("Failed after 3 attempts: ${lastError?.message}")
     }
-
-    private fun isTransient(t: Throwable): Boolean = when {
-        t is java.net.SocketTimeoutException -> true
-        t is java.net.ConnectException -> true
-        t is java.io.IOException && t.message?.contains("timeout") == true -> true
-        else -> false
-    }
-
-    private fun isTransientHttp(code: Int): Boolean = code in 500..599 || code == 429
 
     companion object {
-        private const val M = "ClipSender"
+        // Keep large uploads within the server's 60-second HMAC freshness window.
+        internal fun callTimeoutSeconds(encodedChars: Int): Long = if (encodedChars <= 16 * 1024 * 1024) 15 else 45
+        private val sendLock = Any()
         private val JSON = "application/json; charset=utf-8".toMediaType()
-
         @Volatile var lastSentHash: Int = 0
         @Volatile var lastSentMs: Long = 0L
     }

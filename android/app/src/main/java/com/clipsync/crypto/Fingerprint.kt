@@ -11,13 +11,21 @@ import java.util.Base64 as JBase64
  *  - base64 (standard, with padding) — as required by OkHttp `CertificatePinner`
  *    in the `sha256/<b64>` format.
  *
- *  Also exposes a helper to compute the SPKI-SHA256 of an X.509 cert, used for
- *  TOFU (trust on first use) in manual mode where we don't know the fp yet.
+ *  Also computes the SPKI-SHA256 of an X.509 cert for pinned TLS verification.
  *
  *  Uses [java.util.Base64] (available since API 26, matches our minSdk) so this
  *  object stays testable on the JVM without Robolectric.
  */
 object Fingerprint {
+    fun decodePin(value: String): ByteArray {
+        require(value.matches(Regex("[A-Za-z0-9_-]{43}"))) { "Invalid SPKI fingerprint" }
+        val bytes = JBase64.getUrlDecoder().decode(value)
+        require(bytes.size == 32 && JBase64.getUrlEncoder().withoutPadding().encodeToString(bytes) == value) {
+            "Invalid SPKI fingerprint"
+        }
+        return bytes
+    }
+
 
     /**
      * Convert a base64url-without-padding fp (e.g. `abc-_XYZ` 43 chars) to
@@ -25,7 +33,7 @@ object Fingerprint {
      * OkHttp `CertificatePinner` via `sha256/<base64>`.
      */
     fun base64UrlToStandard(fpBase64Url: String): String {
-        val raw = JBase64.getUrlDecoder().decode(fpBase64Url)
+        val raw = decodePin(fpBase64Url)
         return JBase64.getEncoder().encodeToString(raw)
     }
 

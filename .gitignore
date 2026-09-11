@@ -21,6 +21,7 @@ xcuserdata/
 *.xcworkspace/xcuserdata/
 Pods/
 Package.resolved
+!mac/ClipSync.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 
 # ---------- Android Studio / Gradle ----------
 *.iml

@@ -1,30 +1,38 @@
 import Foundation
 import HTTPTypes
 import Hummingbird
+import NIOCore
+
+protocol ConnectionAddressContext { var remoteAddress: String { get } }
+struct ClipRequestContext: RequestContext, ConnectionAddressContext {
+    var coreContext: CoreRequestContextStorage
+    let remoteAddress: String
+    init(source: ApplicationRequestContextSource) {
+        coreContext = .init(source: source)
+        remoteAddress = source.channel.remoteAddress?.ipAddress ?? "unknown"
+    }
+}
 
 struct RateLimitMiddleware<Context: RequestContext>: RouterMiddleware {
     let rateLimiter: RateLimiter
     let maxInjectBodyBytes: Int
-
-    init(rateLimiter: RateLimiter, maxInjectBodyBytes: Int = 20 * 1024 * 1024) {
-        self.rateLimiter = rateLimiter
-        self.maxInjectBodyBytes = maxInjectBodyBytes
+    init(rateLimiter: RateLimiter, maxInjectBodyBytes: Int = ClipPayload.maxJSONBytes) {
+        self.rateLimiter = rateLimiter; self.maxInjectBodyBytes = maxInjectBodyBytes
     }
-
-    func handle(_ request: Request,
-                context: Context,
+    func handle(_ request: Request, context: Context,
                 next: (Request, Context) async throws -> Response) async throws -> Response {
-        guard request.uri.path == "/inject" else {
-            return try await next(request, context)
-        }
-        let clientIP = request.headers[HTTPField.Name("X-Forwarded-For")!] ?? "unknown"
-        guard await rateLimiter.allow(key: "inject:\(clientIP)", maxRequests: 10, windowSeconds: 1) else {
+        let path = request.uri.path
+        guard path == "/inject" || path == "/pair" else { return try await next(request, context) }
+        // Only the actual socket address is authoritative. Forwarding headers are intentionally ignored.
+        let clientIP = (context as? ConnectionAddressContext)?.remoteAddress ?? "unknown"
+        let pairing = path == "/pair"
+        guard await rateLimiter.allow(key: "\(path):global", maxRequests: pairing ? 20 : 30, windowSeconds: pairing ? 60 : 1),
+              await rateLimiter.allow(key: "\(path):\(clientIP)", maxRequests: pairing ? 5 : 10, windowSeconds: pairing ? 60 : 1) else {
             throw HTTPError(.tooManyRequests)
         }
-        if let lengthStr = request.headers[.contentLength],
-           let length = Int(lengthStr),
-           length > maxInjectBodyBytes {
-            throw HTTPError(.contentTooLarge)
+        if let raw = request.headers[.contentLength] {
+            guard let length = Int(raw), length >= 0 else { throw HTTPError(.badRequest) }
+            guard length <= (pairing ? 1024 : maxInjectBodyBytes) else { throw HTTPError(.contentTooLarge) }
         }
         return try await next(request, context)
     }

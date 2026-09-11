@@ -38,10 +38,10 @@ object ClipboardWriter {
     }
 
     /** Write the given text to the primary clipboard. */
-    fun writeText(context: Context, text: String) {
+    fun writeText(context: Context, text: String, eventNonce: String? = null) {
         lastMacWriteMs = System.currentTimeMillis()
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(buildTextClip(text))
+        cm.setPrimaryClip(withEvent(buildTextClip(text), eventNonce))
     }
 
     /** Write a file referenced by [uri] to the primary clipboard. */
@@ -52,11 +52,19 @@ object ClipboardWriter {
     }
 
     /** Write an image referenced by [uri] to the primary clipboard. */
-    fun writeImage(context: Context, uri: Uri, mime: String) {
+    fun writeImage(context: Context, uri: Uri, mime: String, eventNonce: String? = null) {
         lastMacWriteMs = System.currentTimeMillis()
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(buildImageClip(context.contentResolver, uri, mime))
+        cm.setPrimaryClip(withEvent(buildImageClip(context.contentResolver, uri, mime), eventNonce))
+        com.clipsync.images.ImageCache(context).markApplied(uri)
     }
+
+    private fun withEvent(clip: ClipData, nonce: String?): ClipData {
+        if (nonce != null) clip.description.extras = PersistableBundle().apply { putString(EVENT_NONCE, nonce) }
+        return clip
+    }
+
+    const val EVENT_NONCE = "com.clipsync.EVENT_NONCE"
 
     /**
      * Marker describing the clip was marked sensitive. Kept as a no-op

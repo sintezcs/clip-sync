@@ -8,6 +8,7 @@ final class BonjourAdvertiser: NSObject {
     private let txtRecord: [String: String]
     private var logger: Logger
     private var service: NetService?
+    private let makeService: (String, String, String, Int32) -> NetService
 
     /// `true` once `netServiceDidPublish` fires; reset to `false` on failure or stop.
     private(set) var isPublished = false
@@ -20,23 +21,25 @@ final class BonjourAdvertiser: NSObject {
          port: Int32,
          serviceName: String,
          txtRecord: [String: String],
-         logger: Logger = Logger(label: "clipsync.bonjour")) {
+         logger: Logger = Logger(label: "clipsync.bonjour"),
+         makeService: @escaping (String, String, String, Int32) -> NetService = {
+             NetService(domain: $0, type: $1, name: $2, port: $3)
+         }) {
         self.type = serviceType
         self.port = port
         self.serviceName = serviceName
         self.txtRecord = txtRecord
         self.logger = logger
+        self.makeService = makeService
     }
 
     func start() {
         let perform = { [self] in
             guard service == nil else { return }
-            let svc = NetService(
-                domain: "",
-                type: type,
-                name: serviceName,
-                port: port
-            )
+            let svc = makeService("", type, serviceName, port)
+            // Publish may immediately invoke its delegate; establish identity first.
+            service = svc
+            isPublished = false
             svc.delegate = self
             svc.includesPeerToPeer = true
             svc.schedule(in: .main, forMode: .common)
@@ -46,7 +49,6 @@ final class BonjourAdvertiser: NSObject {
             }
             svc.setTXTRecord(NetService.data(fromTXTRecord: dict))
             svc.publish()
-            service = svc
             logger.info("mDNS publishing", metadata: [
                 "type": .string(type),
                 "name": .string(serviceName),
@@ -62,8 +64,7 @@ final class BonjourAdvertiser: NSObject {
 
     func stop() {
         let perform = { [self] in
-            service?.stop()
-            service = nil
+            retireCurrentService()
         }
         if Thread.isMainThread {
             perform()
@@ -71,10 +72,21 @@ final class BonjourAdvertiser: NSObject {
             DispatchQueue.main.async(execute: perform)
         }
     }
+
+    private func retireCurrentService() {
+        let retired = service
+        // Invalidate before stop, which may itself deliver a delegate callback.
+        service = nil
+        isPublished = false
+        retired?.delegate = nil
+        retired?.stop()
+        retired?.remove(from: .main, forMode: .common)
+    }
 }
 
 extension BonjourAdvertiser: NetServiceDelegate {
     func netServiceDidPublish(_ sender: NetService) {
+        guard service === sender else { return }
         isPublished = true
         logger.info("mDNS published", metadata: [
             "name": .string(sender.name),
@@ -83,7 +95,8 @@ extension BonjourAdvertiser: NetServiceDelegate {
     }
 
     func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
-        isPublished = false
+        guard service === sender else { return }
+        retireCurrentService()
         let code = errorDict[NetService.errorCode]?.intValue ?? -1
         let error = NSError(
             domain: NetService.errorDomain,

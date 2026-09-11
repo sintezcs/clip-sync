@@ -35,6 +35,10 @@ class Prefs(context: Context) {
         get() = prefs.getString(K_HOST, null)
         set(v) { prefs.edit().putString(K_HOST, v).apply() }
 
+    var peerName: String?
+        get() = prefs.getString(K_PEER_NAME, null)
+        set(v) { prefs.edit().putString(K_PEER_NAME, v).apply() }
+
     var port: Int
         get() = prefs.getInt(K_PORT, DEFAULT_PORT)
         set(v) { prefs.edit().putInt(K_PORT, v).apply() }
@@ -65,21 +69,35 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean(K_AUTO_SEND, true)
         set(v) { prefs.edit().putBoolean(K_AUTO_SEND, v).apply() }
 
+    fun savePairing(host: String, port: Int, token: String, fp: String, pairingSecret: String, mode: String, peerName: String? = null) {
+        check(prefs.edit().putString(K_HOST, host).putInt(K_PORT, port)
+            .putString(K_TOKEN, token).putString(K_FP, fp).putString(K_SECRET, pairingSecret).putInt(K_TRUST_VERSION, 1)
+            .putString(K_MODE, mode).putString(K_PEER_NAME, peerName).putBoolean(K_SYNC_ENABLED, true).commit()) { "Unable to save pairing securely" }
+    }
+
     fun clearPairing() {
         prefs.edit()
+            .remove(K_TRUST_VERSION)
             .remove(K_TOKEN)
             .remove(K_FP)
             .remove(K_SECRET)
+            .remove(K_HOST)
+            .remove(K_PEER_NAME)
+            .putBoolean(K_SYNC_ENABLED, false)
             .apply()
     }
 
-    fun hasPairing(): Boolean = !token.isNullOrEmpty() && !fp.isNullOrEmpty() && !host.isNullOrEmpty()
+    fun hasTrustedIdentity(): Boolean = prefs.getInt(K_TRUST_VERSION, 0) >= 1 && !token.isNullOrEmpty() && !fp.isNullOrEmpty() && !pairingSecret.isNullOrEmpty()
+
+    fun hasPairing(): Boolean = hasTrustedIdentity()
 
     companion object {
         private const val FILE = "clipsync_prefs"
+        private const val K_TRUST_VERSION = "verified_trust_version"
         private const val K_TOKEN = "token"
         private const val K_FP = "fp"
         private const val K_HOST = "host"
+        private const val K_PEER_NAME = "peer_name"
         private const val K_PORT = "port"
         private const val K_MODE = "mode"
         private const val K_SECRET = "pairing_secret"

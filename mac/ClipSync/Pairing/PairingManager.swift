@@ -8,6 +8,7 @@ enum PairingError: Error, Equatable {
     case expired
     case consumed
     case randomFailure
+    case rateLimited
 }
 
 struct PairingResponse: Codable, Sendable {
@@ -20,8 +21,20 @@ struct PairingResponse: Codable, Sendable {
 }
 
 struct PairingSession: Sendable {
+    let id: String
     let code: String
+    let qrSecret: String
     let expiresAt: Date
+
+    func url(hostname: String, port: Int, fingerprint: String) -> String {
+        var components = URLComponents()
+        components.scheme = "clipsync"
+        components.host = "pair"
+        components.queryItems = [URLQueryItem(name: "v", value: "2"),
+            URLQueryItem(name: "host", value: hostname), URLQueryItem(name: "port", value: String(port)),
+            URLQueryItem(name: "fp", value: fingerprint), URLQueryItem(name: "secret", value: qrSecret)]
+        return components.string ?? ""
+    }
 }
 
 protocol PairingClock: Sendable {
@@ -34,8 +47,11 @@ struct SystemPairingClock: PairingClock {
 
 actor PairingManager {
     private struct ActiveCode {
+        let id: String
         let code: String
+        let qrSecret: String
         let createdAt: Date
+        var attempts = 0
         var consumed: Bool = false
     }
 
@@ -56,45 +72,57 @@ actor PairingManager {
     }
 
     func startPairing() throws -> PairingSession {
-        let code = try Self.generate6DigitCode()
-        let createdAt = clock.now()
-        active = ActiveCode(code: code, createdAt: createdAt)
-        let session = PairingSession(code: code, expiresAt: createdAt.addingTimeInterval(ttl))
-        logger.info("Pairing code generated", metadata: ["ttl": .stringConvertible(Int(ttl))])
-        return session
+        try start(id: UUID().uuidString)
     }
 
-    func cancel() {
-        active = nil
+    private func start(id: String) throws -> PairingSession {
+        guard secret.count == 32, ttl > 0, ttl <= 300 else { throw PairingError.invalid }
+        let code = try Self.generate6DigitCode()
+        let qr = try Self.randomBytes(count: 32).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        active = ActiveCode(id: id, code: code, qrSecret: qr, createdAt: clock.now())
+        return session(active!)
+    }
+
+    func refreshPairing(sessionID: String) throws -> PairingSession {
+        guard active?.id == sessionID else { throw PairingError.notStarted }
+        return try start(id: sessionID)
+    }
+
+    func cancel(sessionID: String? = nil) {
+        if sessionID == nil || active?.id == sessionID { active = nil }
+    }
+
+    private func session(_ active: ActiveCode) -> PairingSession {
+        PairingSession(id: active.id, code: active.code, qrSecret: active.qrSecret,
+            expiresAt: active.createdAt.addingTimeInterval(ttl))
     }
 
     func currentSession() -> PairingSession? {
-        guard let a = active, !a.consumed else { return nil }
-        if clock.now().timeIntervalSince(a.createdAt) > ttl { return nil }
-        return PairingSession(code: a.code, expiresAt: a.createdAt.addingTimeInterval(ttl))
+        guard let active, !active.consumed else { return nil }
+        let age = clock.now().timeIntervalSince(active.createdAt)
+        guard age >= 0 && age < ttl else { return nil }
+        return session(active)
     }
 
-    func consume(code: String) throws -> PairingResponse {
-        guard let a = active else { throw PairingError.notStarted }
-        if clock.now().timeIntervalSince(a.createdAt) > ttl {
-            active = nil
-            throw PairingError.expired
-        }
-        guard !a.consumed else { throw PairingError.consumed }
-        guard a.code == code else { throw PairingError.invalid }
-        active?.consumed = true
+    func consume(code: String) throws -> PairingResponse { try consume(candidate: code, qr: false) }
+    func consume(secret: String) throws -> PairingResponse { try consume(candidate: secret, qr: true) }
 
+    private func consume(candidate: String, qr: Bool) throws -> PairingResponse {
+        guard let current = active else { throw PairingError.notStarted }
+        let age = clock.now().timeIntervalSince(current.createdAt)
+        guard age >= 0 && age < ttl else { active = nil; throw PairingError.expired }
+        guard !current.consumed else { throw PairingError.consumed }
+        guard current.attempts < 10 else { throw PairingError.rateLimited }
+        active?.attempts += 1
+        let expected = qr ? current.qrSecret : current.code
+        guard HMACValidator.constantTimeEquals(candidate, expected) else { throw PairingError.invalid }
+        active?.consumed = true
         let tokenBytes = try Self.randomBytes(count: 32)
-        let signature = HMAC<SHA256>.authenticationCode(
-            for: tokenBytes,
-            using: SymmetricKey(data: secret)
-        )
-        logger.info("Pairing code consumed")
-        return PairingResponse(
-            token: tokenBytes.base64EncodedString(),
-            sig: Data(signature).base64EncodedString(),
-            secret: secret.base64EncodedString()
-        )
+        let signature = HMAC<SHA256>.authenticationCode(for: tokenBytes, using: SymmetricKey(data: secret))
+        return PairingResponse(token: tokenBytes.base64EncodedString(), sig: Data(signature).base64EncodedString(),
+            secret: secret.base64EncodedString())
     }
 
     static func generate6DigitCode() throws -> String {

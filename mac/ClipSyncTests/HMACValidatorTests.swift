@@ -23,7 +23,7 @@ final class HMACValidatorTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let body = Data("body".utf8)
         let ts = Int(now.timeIntervalSince1970)
-        let tampered = "t=\(ts), v1=deadbeef"
+        let tampered = HMACValidator.sign(body: Data("different body".utf8), secret: secret, at: ts)
         let validator = HMACValidator(secret: secret, clock: FixedClock(now))
         do {
             try validator.validate(headerValue: tampered, body: body)
@@ -67,5 +67,18 @@ final class HMACValidatorTests: XCTestCase {
     func testMalformedHeaderRejected() {
         let validator = HMACValidator(secret: secret, clock: FixedClock(Date()))
         XCTAssertThrowsError(try validator.validate(headerValue: "nope", body: Data()))
+    }
+    func testExtremeTimestampsDuplicateHeadersAndMalformedSignaturesFailClosed() {
+        let validator = HMACValidator(secret: Data(repeating: 1, count: 32))
+        for timestamp in [String(Int64.min), String(Int64.max), "18446744073709551616"] {
+            XCTAssertThrowsError(try validator.validate(headerValue: "t=\(timestamp), v1=\(String(repeating: "0", count: 64))", body: Data()))
+        }
+        XCTAssertThrowsError(try HMACValidator.parseHeader("t=1, t=2, v1=\(String(repeating: "0", count: 64))"))
+        XCTAssertThrowsError(try HMACValidator.parseHeader("t=1, v1=not-hex"))
+    }
+    func testConstantTimeComparisonUsesUTF8ByteLengthsWithoutIndexTrap() {
+        XCTAssertFalse(HMACValidator.constantTimeEquals("é", "a"))
+        XCTAssertFalse(HMACValidator.constantTimeEquals("é", "ab"))
+        XCTAssertTrue(HMACValidator.constantTimeEquals("same", "same"))
     }
 }

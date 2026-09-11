@@ -67,9 +67,9 @@ final class PairingManagerTests: XCTestCase {
     func testWrongCodeReturnsInvalid() async throws {
         let clock = MutableClock(Date(timeIntervalSince1970: 0))
         let manager = PairingManager(secret: secret, ttl: 300, clock: clock)
-        _ = try await manager.startPairing()
+        let session = try await manager.startPairing()
         do {
-            _ = try await manager.consume(code: "000000")
+            _ = try await manager.consume(code: session.code == "000000" ? "111111" : "000000")
             XCTFail("wrong code should fail")
         } catch PairingError.invalid {
             // expected
