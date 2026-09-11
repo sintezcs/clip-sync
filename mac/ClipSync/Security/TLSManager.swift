@@ -8,6 +8,8 @@ import Logging
 enum TLSManagerError: Error {
     case serializationFailed
     case storageFailed
+    case incompleteIdentity
+    case invalidIdentity
 }
 
 /// Generates and persists a self-signed TLS identity (EC P-256) for the ClipSync server.
@@ -19,7 +21,7 @@ enum TLSManagerError: Error {
 /// On subsequent launches, the persisted identity is loaded and reused so the SPKI
 /// fingerprint (and therefore cert pinning) remains stable across restarts.
 final class TLSManager: @unchecked Sendable {
-    private let keychain: Keychain
+    private let keychain: any KeychainStorage
     private var logger: Logger
 
     private let certAccount = "tls-cert-der"
@@ -32,7 +34,7 @@ final class TLSManager: @unchecked Sendable {
     /// and for advertising via Bonjour TXT `fp`.
     private(set) var spkiFingerprint: String = ""
 
-    init(keychain: Keychain = Keychain(service: TLSManager.service),
+    init(keychain: any KeychainStorage = Keychain(service: TLSManager.service),
          logger: Logger = Logger(label: "clipsync.tls")) {
         self.keychain = keychain
         self.logger = logger
@@ -42,7 +44,11 @@ final class TLSManager: @unchecked Sendable {
 
     /// Loads the persisted identity, or creates a new one and persists it.
     func loadOrCreate() throws {
+        certificateDER = Data()
+        privateKeyPEM = ""
+        spkiFingerprint = ""
         if let existing = try loadExisting() {
+            try Self.validateIdentity(certDER: existing.certDER, keyPEM: existing.keyPEM)
             self.certificateDER = existing.certDER
             self.privateKeyPEM = existing.keyPEM
             self.spkiFingerprint = try Self.spkiFingerprint(certDER: existing.certDER)
@@ -56,6 +62,7 @@ final class TLSManager: @unchecked Sendable {
             hostnames: Self.defaultSANHostnames(),
             ipAddresses: Self.defaultSANIPv4()
         )
+        try Self.validateIdentity(certDER: identity.certDER, keyPEM: identity.keyPEM)
         try keychain.save(identity.certDER, account: certAccount)
         try keychain.save(Data(identity.keyPEM.utf8), account: keyAccount)
 
@@ -69,6 +76,7 @@ final class TLSManager: @unchecked Sendable {
 
     /// Builds a server-side NIOSSL TLSConfiguration backed by this identity.
     func makeServerTLSConfiguration() throws -> TLSConfiguration {
+        guard !certificateDER.isEmpty && !privateKeyPEM.isEmpty else { throw TLSManagerError.incompleteIdentity }
         let cert = try NIOSSLCertificate(bytes: [UInt8](certificateDER), format: .der)
         let key = try NIOSSLPrivateKey(bytes: [UInt8](privateKeyPEM.utf8), format: .pem)
         return TLSConfiguration.makeServerConfiguration(
@@ -78,16 +86,29 @@ final class TLSManager: @unchecked Sendable {
     }
 
     private func loadExisting() throws -> (certDER: Data, keyPEM: String)? {
-        do {
-            let certDER = try keychain.load(account: certAccount)
-            let keyData = try keychain.load(account: keyAccount)
-            guard let keyPEM = String(data: keyData, encoding: .utf8) else {
-                return nil
-            }
-            return (certDER, keyPEM)
-        } catch KeychainError.notFound {
-            return nil
+        func read(_ account: String) throws -> Data? {
+            do { return try keychain.load(account: account) }
+            catch KeychainError.notFound { return nil }
         }
+        let cert = try read(certAccount)
+        let key = try read(keyAccount)
+        if cert == nil && key == nil { return nil }
+        guard let cert, let key else { throw TLSManagerError.incompleteIdentity }
+        guard cert.count <= 65_536, key.count <= 16_384,
+              let keyPEM = String(data: key, encoding: .utf8) else { throw TLSManagerError.invalidIdentity }
+        return (cert, keyPEM)
+    }
+
+    private static func validateIdentity(certDER: Data, keyPEM: String) throws {
+        let certificate = try Certificate(derEncoded: [UInt8](certDER))
+        let privateKey = try P256.Signing.PrivateKey(pemRepresentation: keyPEM)
+        guard certificate.publicKey == Certificate.PrivateKey(privateKey).publicKey else {
+            throw TLSManagerError.invalidIdentity
+        }
+        let configuration = TLSConfiguration.makeServerConfiguration(
+            certificateChain: [.certificate(try NIOSSLCertificate(bytes: [UInt8](certDER), format: .der))],
+            privateKey: .privateKey(try NIOSSLPrivateKey(bytes: [UInt8](keyPEM.utf8), format: .pem)))
+        _ = try NIOSSLContext(configuration: configuration)
     }
 
     // MARK: - Cert generation
@@ -133,9 +154,10 @@ final class TLSManager: @unchecked Sendable {
             SubjectKeyIdentifier(keyIdentifier: ArraySlice(subjectKeyIdentifier(for: certPrivateKey.publicKey)))
         }
 
-        let serial: Certificate.SerialNumber = {
+        let serial: Certificate.SerialNumber = try {
             var bytes = [UInt8](repeating: 0, count: 16)
-            _ = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!) }
+            let status = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!) }
+            guard status == errSecSuccess else { throw KeychainError.randomGenerationFailed(status) }
             // Ensure positive serial
             bytes[0] &= 0x7F
             if bytes[0] == 0 { bytes[0] = 0x01 }
@@ -257,12 +279,15 @@ extension TLSManagerError: LocalizedError {
         switch self {
         case .serializationFailed: return "Failed to serialize TLS certificate"
         case .storageFailed: return "Failed to store TLS certificate in Keychain"
+        case .incompleteIdentity: return "TLS identity is incomplete; existing trust was preserved"
+        case .invalidIdentity: return "Stored TLS certificate and key are invalid or mismatched"
         }
     }
     var recoverySuggestion: String? {
         switch self {
         case .serializationFailed: return "Restart ClipSync. If the problem persists, delete ClipSync items in Keychain Access."
         case .storageFailed: return "Check Keychain Access permissions. Restart your Mac if error -34018 appears."
+        case .incompleteIdentity, .invalidIdentity: return "Restore the stored identity or explicitly reset pairing before creating a new identity."
         }
     }
 }

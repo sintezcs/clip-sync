@@ -33,7 +33,7 @@ struct HMACValidator: Sendable {
 
     init(secret: Data,
          clock: HMACClock = SystemHMACClock(),
-         skewSeconds: TimeInterval = 30) {
+         skewSeconds: TimeInterval = 60) {
         self.secret = secret
         self.clock = clock
         self.skewSeconds = skewSeconds
@@ -45,7 +45,8 @@ struct HMACValidator: Sendable {
         }
         let parsed = try Self.parseHeader(headerValue)
         let now = clock.now().timeIntervalSince1970
-        guard abs(now - Double(parsed.timestamp)) < skewSeconds else {
+        guard now.isFinite, now >= 0, parsed.timestamp >= 0, skewSeconds > 0,
+              abs(now - Double(parsed.timestamp)) < skewSeconds else {
             throw HMACValidationError.replayOrSkew
         }
 
@@ -78,6 +79,7 @@ struct HMACValidator: Sendable {
     }
 
     static func parseHeader(_ raw: String) throws -> ParsedHeader {
+        guard raw.utf8.count <= 256 else { throw HMACValidationError.malformedHeader }
         var ts: Int64?
         var sig: String?
         let parts = raw.split(separator: ",")
@@ -90,11 +92,14 @@ struct HMACValidator: Sendable {
             let value = String(trimmed[trimmed.index(after: equalsIdx)...])
             switch key {
             case "t":
-                guard let parsed = Int64(value) else {
+                guard ts == nil, let parsed = Int64(value), parsed >= 0 else {
                     throw HMACValidationError.invalidTimestamp
                 }
                 ts = parsed
             case "v1":
+                guard sig == nil, value.utf8.count == 64, value.utf8.allSatisfy({
+                    (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+                }) else { throw HMACValidationError.malformedHeader }
                 sig = value
             default:
                 // Ignore unknown parameters to allow forward compatibility.
@@ -107,10 +112,10 @@ struct HMACValidator: Sendable {
     }
 
     static func constantTimeEquals(_ a: String, _ b: String) -> Bool {
-        guard a.count == b.count else { return false }
-        var diff: UInt8 = 0
         let aBytes = Array(a.utf8)
         let bBytes = Array(b.utf8)
+        guard aBytes.count == bBytes.count else { return false }
+        var diff: UInt8 = 0
         for i in 0..<aBytes.count {
             diff |= aBytes[i] ^ bBytes[i]
         }

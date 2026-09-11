@@ -53,7 +53,12 @@ fun SettingsScreen(
     val context = LocalContext.current
     val state by vm.state.collectAsState()
     val readiness by ClipForegroundService.readiness.collectAsState()
+    val clipboardDiagnostics = ClipboardAccessDiagnostics.from(
+        state.shizukuState, state.hasPairing, state.syncEnabled,
+        readiness.helperRunning, readiness.clipboardReadable
+    )
     val code by vm.pairingCode.collectAsState()
+    val qrSecret by vm.pairingQrSecret.collectAsState()
     var destination by rememberSaveable { mutableStateOf(SettingsDestination.HOME) }
     var discoveredName by rememberSaveable { mutableStateOf<String?>(null) }
     var host by rememberSaveable { mutableStateOf("") }
@@ -93,7 +98,13 @@ fun SettingsScreen(
                 host = uri.getQueryParameter("host").orEmpty().take(253)
                 port = uri.getQueryParameter("port")?.take(5) ?: Prefs.DEFAULT_PORT.toString()
                 fingerprint = uri.getQueryParameter("fp").orEmpty().take(43)
-                vm.updatePairingCode(uri.getQueryParameter("code").orEmpty())
+                vm.clearPairingCode()
+                if (uri.getQueryParameter("v") == "2") {
+                    if (listOf("v", "host", "port", "fp", "secret").all { uri.getQueryParameters(it).size == 1 })
+                        vm.updatePairingQrSecret(uri.getQueryParameter("secret").orEmpty())
+                } else if (uri.getQueryParameter("v") == null) {
+                    vm.updatePairingCode(uri.getQueryParameter("code").orEmpty())
+                }
                 verified = false
                 navigate(SettingsDestination.PAIRING)
             }
@@ -230,11 +241,11 @@ fun SettingsScreen(
                                 SettingsGroup("Diagnostics") {
                                     SettingsRow("Network connection", if (readiness.networkConnected) "Connected" else "Unavailable")
                                     SettingsDivider()
-                                    SettingsRow("Helper authorization", if (readiness.helperAuthorized) "Allowed" else "Needed")
+                                    SettingsRow("Helper authorization", clipboardDiagnostics.authorization)
                                     SettingsDivider()
-                                    SettingsRow("Helper process", if (readiness.helperRunning) "Running" else "Unavailable")
+                                    SettingsRow("Helper process", clipboardDiagnostics.process)
                                     SettingsDivider()
-                                    SettingsRow("Clipboard access", if (readiness.clipboardReadable) "Readable" else "Not confirmed")
+                                    SettingsRow("Clipboard access", clipboardDiagnostics.clipboard)
                                     readiness.lastIssue?.let { SettingsRow("Recovery", it) }
                                     state.errors.forEach { error ->
                                         SettingsDivider()
@@ -267,9 +278,9 @@ fun SettingsScreen(
                                         val target = discoveredName?.let { name ->
                                             PairingTarget.Auto(com.clipsync.discovery.Discovered(host.trim(), port.toInt(), null, name))
                                         } ?: PairingTarget.Manual(host.trim(), port.toInt())
-                                        vm.pair(context, target, code, fingerprint.trim(), state.hasPairing)
+                                        vm.pair(context, target, code, fingerprint.trim(), state.hasPairing, qrSecret.takeIf { it.isNotEmpty() })
                                         vm.clearPairingCode(); verified = false
-                                    })
+                                    }, hasQrSecret = qrSecret.isNotEmpty())
                                 if (state.errors.isNotEmpty()) SettingsGroup {
                                     state.errors.forEach { SettingsRow(it.summary, it.suggestion) }
                                 }
@@ -311,7 +322,7 @@ internal fun StatusGroup(peer: String?, status: String, paired: Boolean, enabled
 @Composable
 internal fun PairingReview(host: String, port: String, fingerprint: String, code: String, verified: Boolean,
     replacing: Boolean, busy: Boolean, onHost: (String) -> Unit, onPort: (String) -> Unit,
-    onFingerprint: (String) -> Unit, onCode: (String) -> Unit, onVerified: (Boolean) -> Unit, onConfirm: () -> Unit) {
+    onFingerprint: (String) -> Unit, onCode: (String) -> Unit, onVerified: (Boolean) -> Unit, onConfirm: () -> Unit, hasQrSecret: Boolean = false) {
     SettingsGroup {
         SettingsRow(if (replacing) "Replace your paired Mac" else "Connect to your Mac",
             "Open pairing on your Mac. Compare the complete fingerprint on its screen before confirming. A link or nearby device is not proof of identity.")
@@ -319,14 +330,14 @@ internal fun PairingReview(host: String, port: String, fingerprint: String, code
             OutlinedTextField(host, onHost, label = { Text("Mac address") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy)
             OutlinedTextField(port, onPort, label = { Text("Port") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy)
             OutlinedTextField(fingerprint, onFingerprint, label = { Text("SPKI fingerprint from Mac") }, modifier = Modifier.fillMaxWidth(), enabled = !busy)
-            OutlinedTextField(code, onCode, label = { Text("Six-digit pairing code") }, modifier = Modifier.fillMaxWidth(),
+            if (!hasQrSecret) OutlinedTextField(code, onCode, label = { Text("Six-digit pairing code") }, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = !busy)
-            Text("Codes are cleared after two minutes or when you leave this review.", style = MaterialTheme.typography.bodyMedium)
+            Text(if (hasQrSecret) "Single-use pairing link received. It is cleared after two minutes or when you leave this review." else "Codes are cleared after two minutes or when you leave this review.", style = MaterialTheme.typography.bodyMedium)
         }
         SettingsSwitch("I compared the fingerprint", "It matches the trusted Mac's screen", verified, !busy, onCheckedChange = onVerified)
         PillAction(if (busy) "Pairing…" else if (replacing) "Replace paired Mac" else "Confirm pairing",
             enabled = !busy && verified && host.isNotBlank() && port.toIntOrNull() in 1..65535 &&
-                fingerprint.matches(Regex("[A-Za-z0-9_-]{43}")) && code.matches(Regex("[0-9]{6}")), onClick = onConfirm)
+                fingerprint.matches(Regex("[A-Za-z0-9_-]{43}")) && (hasQrSecret || code.matches(Regex("[0-9]{6}"))), onClick = onConfirm)
     }
 }
 

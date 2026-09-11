@@ -54,6 +54,26 @@ class SettingsUiTest {
         assertEquals(1, confirmations)
     }
 
+    @Test fun singleUseLinkStillRequiresFingerprintReviewAndExplicitConfirmation() {
+        var confirmations = 0
+        compose.setContent {
+            ClipSyncTheme {
+                var verified by remember { mutableStateOf(false) }
+                SettingsPage("Review pairing") {
+                    PairingReview("test-mac.local", "7010", "A".repeat(43), "", verified,
+                        replacing = false, busy = false, onHost = {}, onPort = {}, onFingerprint = {},
+                        onCode = {}, onVerified = { verified = it }, onConfirm = { confirmations++ }, hasQrSecret = true)
+                }
+            }
+        }
+        compose.onNodeWithText("Six-digit pairing code").assertDoesNotExist()
+        compose.onNodeWithText("Confirm pairing").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("I compared the fingerprint").performScrollTo().performClick()
+        assertEquals(0, confirmations)
+        compose.onNodeWithText("Confirm pairing").performScrollTo().performClick()
+        assertEquals(1, confirmations)
+    }
+
     @Test fun savedSelectionSurvivesRecreationAndWidthChanges() {
         val restoration = StateRestorationTester(compose)
         var width by mutableStateOf(340.dp)

@@ -76,8 +76,12 @@ class SettingsViewModel : ViewModel() {
 
     // Secrets live only in this ViewModel's short-lived session, never SavedState or preferences.
     val pairingCode = MutableStateFlow("")
+    val pairingQrSecret = MutableStateFlow("")
     private var pairingExpiry: Job? = null
+    private var pairingJob: Job? = null
+    private val pairingAttempts = PairingAttemptGate()
     fun updatePairingCode(code: String) {
+        pairingQrSecret.value = ""
         pairingCode.value = code.take(6)
         if (pairingExpiry == null && code.isNotEmpty()) {
             pairingExpiry = viewModelScope.launch {
@@ -86,7 +90,14 @@ class SettingsViewModel : ViewModel() {
             }
         }
     }
+    fun updatePairingQrSecret(secret: String) {
+        clearPairingCode()
+        if (!PairingApi.validQrSecret(secret)) return
+        pairingQrSecret.value = secret
+        pairingExpiry = viewModelScope.launch { delay(120_000); clearPairingCode() }
+    }
     fun clearPairingCode() {
+        pairingQrSecret.value = ""
         pairingCode.value = ""
         pairingExpiry?.cancel()
         pairingExpiry = null
@@ -188,17 +199,24 @@ class SettingsViewModel : ViewModel() {
     fun stopSync(context: Context) {
         L.action(M, "stopSync")
         val prefs = Prefs(context)
-        prefs.syncEnabled = false
-        _state.value = _state.value.copy(syncEnabled = false, status = ConnectionStatus.Disconnected)
+        pairingAttempts.invalidate { prefs.syncEnabled = false }
+        pairingJob?.cancel()
+        pairingJob = null
+        clearPairingCode()
+        _state.value = _state.value.copy(syncEnabled = false, pairingInProgress = false, status = ConnectionStatus.Disconnected)
         ClipForegroundService.stop(context)
     }
 
     fun unpair(context: Context) {
         L.action(M, "unpair host=${_state.value.pairedHost}")
-        Prefs(context).clearPairing()
+        pairingAttempts.invalidate { Prefs(context).clearPairing() }
+        pairingJob?.cancel()
+        pairingJob = null
+        clearPairingCode()
         ClipForegroundService.stop(context)
         _state.value = _state.value.copy(
             hasPairing = false,
+            pairingInProgress = false,
             pairedHost = null,
             pairedName = null,
             pairedPort = Prefs.DEFAULT_PORT,
@@ -257,18 +275,19 @@ class SettingsViewModel : ViewModel() {
         }
     }
 
-    fun pair(context: Context, target: PairingTarget, code: String, verifiedFingerprint: String, replaceExisting: Boolean = false) {
+    fun pair(context: Context, target: PairingTarget, code: String, verifiedFingerprint: String, replaceExisting: Boolean = false, qrSecret: String? = null) {
         if (_state.value.pairingInProgress) return
         if (Prefs(context).hasPairing() && !replaceExisting) return
-        if (!verifiedFingerprint.matches(Regex("[A-Za-z0-9_-]{43}")) || !code.matches(Regex("[0-9]{6}"))) return
+        if (!verifiedFingerprint.matches(Regex("[A-Za-z0-9_-]{43}")) || (qrSecret == null && !code.matches(Regex("[0-9]{6}"))) || (qrSecret != null && !PairingApi.validQrSecret(qrSecret))) return
         val targetLabel = when (target) {
             is PairingTarget.Auto -> "${target.discovered.host}:${target.discovered.port}"
             is PairingTarget.Manual -> "${target.host}:${target.port}"
         }
         L.action(M, "pair target=$targetLabel")
 
+        val attempt = pairingAttempts.begin()
         _state.value = _state.value.copy(pairingInProgress = true)
-        viewModelScope.launch {
+        pairingJob = viewModelScope.launch {
             _state.value = _state.value.copy(status = ConnectionStatus.Connecting, errors = emptyList())
             try {
                 val prefs = Prefs(context)
@@ -277,92 +296,32 @@ class SettingsViewModel : ViewModel() {
                 val host = when (target) { is PairingTarget.Auto -> target.discovered.host; is PairingTarget.Manual -> target.host }
                 val port = when (target) { is PairingTarget.Auto -> target.discovered.port; is PairingTarget.Manual -> target.port }
                 val response = withContext(Dispatchers.IO) {
-                    api.pairWithKnownFp(host, port, code, verifiedFingerprint)
+                    if (qrSecret != null) api.pairWithQrSecret(host, port, qrSecret, verifiedFingerprint)
+                    else api.pairWithKnownFp(host, port, code, verifiedFingerprint)
                 }
-                persistAndStart(context, prefs, host, port, response.token, verifiedFingerprint,
+                persistAndStart(attempt, context, prefs, host, port, response.token, verifiedFingerprint,
                     response.secret, if (target is PairingTarget.Auto) Prefs.MODE_AUTO else Prefs.MODE_MANUAL,
                     (target as? PairingTarget.Auto)?.discovered?.name)
             } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
                 L.error(M, "pair failed", t)
-                val appError = when {
-                    t is javax.net.ssl.SSLHandshakeException ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Certificate mismatch",
-                            detail = t.message,
-                            suggestion = "Stop and compare the fingerprint directly on your trusted Mac before pairing again.",
-                            action = ErrorAction.Repair,
-                        )
-                    t is java.net.ConnectException ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Server unreachable",
-                            detail = t.message,
-                            suggestion = "Check that both devices are on the same network.",
-                            action = ErrorAction.Retry,
-                        )
-                    t is com.clipsync.net.PairingApi.PairingException && t.message?.contains("\"invalid\"") == true ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Wrong pairing code",
-                            detail = "The code was incorrect.",
-                            suggestion = "Check the code shown on Mac and try again.",
-                            action = ErrorAction.Retry,
-                        )
-                    t is com.clipsync.net.PairingApi.PairingException && t.message?.contains("\"expired\"") == true ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Pairing code expired",
-                            detail = "The code was only valid for 5 minutes.",
-                            suggestion = "Generate a new code on the Mac.",
-                            action = ErrorAction.Retry,
-                        )
-                    t is com.clipsync.net.PairingApi.PairingException && t.message?.contains("\"consumed\"") == true ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Code already used",
-                            detail = "Each pairing code can only be used once.",
-                            suggestion = "Generate a new code on the Mac.",
-                            action = ErrorAction.Retry,
-                        )
-                    t is com.clipsync.net.PairingApi.PairingException && t.message?.contains("\"notStarted\"") == true ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "No pairing session on Mac",
-                            detail = "The Mac app is not waiting for a pairing request.",
-                            suggestion = "Click 'Pair new device' on the Mac first.",
-                            action = ErrorAction.Retry,
-                        )
-                    t is com.clipsync.net.PairingApi.PairingException ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Pairing failed",
-                            detail = t.message ?: "Unknown error",
-                            suggestion = "Try again.",
-                            action = ErrorAction.Retry,
-                        )
-                    else ->
-                        AppError(
-                            severity = ErrorSeverity.ERROR,
-                            summary = "Connection failed",
-                            detail = t.message ?: "Unknown error",
-                            suggestion = "Try again.",
-                            action = ErrorAction.Retry,
-                        )
-                }
+                if (!pairingAttempts.isCurrent(attempt)) return@launch
+                val appError = pairingFailure(t)
                 _state.value = _state.value.copy(
                     status = ConnectionStatus.Error(appError.summary)
                 )
                 addError(appError)
             } finally {
-                _state.value = _state.value.copy(pairingInProgress = false)
+                if (pairingAttempts.isCurrent(attempt)) {
+                    _state.value = _state.value.copy(pairingInProgress = false)
+                }
             }
         }
     }
 
     private suspend fun persistAndStart(
+        attempt: Any,
         context: Context,
         prefs: Prefs,
         host: String,
@@ -374,21 +333,26 @@ class SettingsViewModel : ViewModel() {
         peerName: String?
     ) {
         L.action(M, "pairSuccess host=$host port=$port mode=$mode")
-        withContext(Dispatchers.IO) {
-            prefs.savePairing(host, port, token, fp, pairingSecret, mode, peerName)
+        val committed = withContext(Dispatchers.IO) {
+            pairingAttempts.runIfCurrent(attempt) {
+                prefs.savePairing(host, port, token, fp, pairingSecret, mode, peerName)
+            }
         }
-        discoveryJob?.cancel()
-        _state.value = _state.value.copy(
-            syncEnabled = true,
-            hasPairing = true,
-            pairedHost = host,
-            pairedName = peerName,
-            pairedPort = port,
-            mode = mode,
-            status = ConnectionStatus.Connecting,
-            errors = emptyList()
-        )
-        ClipForegroundService.start(context)
+        if (!committed) return
+        pairingAttempts.runIfCurrent(attempt) {
+            discoveryJob?.cancel()
+            _state.value = _state.value.copy(
+                syncEnabled = true,
+                hasPairing = true,
+                pairedHost = host,
+                pairedName = peerName,
+                pairedPort = port,
+                mode = mode,
+                status = ConnectionStatus.Connecting,
+                errors = emptyList()
+            )
+            ClipForegroundService.start(context)
+        }
     }
 
     fun refreshShizukuState(context: Context) {

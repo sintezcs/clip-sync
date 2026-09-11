@@ -65,3 +65,47 @@ final class TLSManagerTests: XCTestCase {
         XCTAssertEqual(encoded, "_-7dzA")
     }
 }
+
+
+final class TLSManagerFailureTests: XCTestCase {
+    func testPartialIdentityIsNotReplaced() throws {
+        for missingAccount in ["tls-cert-der", "tls-key-pem"] {
+            let storage = TestKeychainStorage()
+            storage.values[missingAccount == "tls-cert-der" ? "tls-key-pem" : "tls-cert-der"] = Data([1, 2, 3])
+            let manager = TLSManager(keychain: storage)
+            XCTAssertThrowsError(try manager.loadOrCreate())
+            XCTAssertEqual(storage.saves, 0)
+            XCTAssertTrue(manager.spkiFingerprint.isEmpty)
+            XCTAssertThrowsError(try manager.makeServerTLSConfiguration())
+        }
+    }
+
+    func testMismatchedPrivateKeyFailsBeforePublishingIdentity() throws {
+        let a = try TLSManager.generateSelfSigned(hostnames: ["localhost"], ipAddresses: [])
+        let b = try TLSManager.generateSelfSigned(hostnames: ["localhost"], ipAddresses: [])
+        let storage = TestKeychainStorage()
+        storage.values["tls-cert-der"] = a.certDER
+        storage.values["tls-key-pem"] = Data(b.keyPEM.utf8)
+        let manager = TLSManager(keychain: storage)
+        XCTAssertThrowsError(try manager.loadOrCreate())
+        XCTAssertTrue(manager.spkiFingerprint.isEmpty)
+        XCTAssertEqual(storage.saves, 0)
+    }
+
+    func testStorageFailureCannotPublishNewIdentity() throws {
+        let storage = TestKeychainStorage()
+        storage.saveFailure = KeychainError.unexpectedStatus(-1)
+        let manager = TLSManager(keychain: storage)
+        XCTAssertThrowsError(try manager.loadOrCreate())
+        XCTAssertTrue(manager.spkiFingerprint.isEmpty)
+        XCTAssertThrowsError(try manager.makeServerTLSConfiguration())
+    }
+
+    func testInvalidEncodingIsNotTreatedAsMissingIdentity() throws {
+        let storage = TestKeychainStorage()
+        storage.values["tls-cert-der"] = Data([1])
+        storage.values["tls-key-pem"] = Data([0xff])
+        XCTAssertThrowsError(try TLSManager(keychain: storage).loadOrCreate())
+        XCTAssertEqual(storage.saves, 0)
+    }
+}

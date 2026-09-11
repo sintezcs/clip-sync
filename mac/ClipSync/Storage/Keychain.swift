@@ -6,9 +6,16 @@ enum KeychainError: Error, Equatable {
     case notFound
     case dataConversionFailure
     case randomGenerationFailed(OSStatus)
+    case invalidSecretLength
 }
 
-final class Keychain: @unchecked Sendable {
+protocol KeychainStorage: Sendable {
+    func load(account: String) throws -> Data
+    func save(_ data: Data, account: String) throws
+    func delete(account: String) throws
+}
+
+final class Keychain: KeychainStorage, @unchecked Sendable {
     static let pairingSecretService = "com.clipsync.pairing-secret"
     static let defaultAccount = "default"
 
@@ -79,8 +86,11 @@ final class Keychain: @unchecked Sendable {
 
     func loadOrCreateSecret(size: Int = 32,
                             account: String = Keychain.defaultAccount) throws -> Data {
+        guard size == 32 else { throw KeychainError.invalidSecretLength }
         do {
-            return try load(account: account)
+            let value = try load(account: account)
+            guard value.count == size else { throw KeychainError.invalidSecretLength }
+            return value
         } catch KeychainError.notFound {
             let bytes = try Self.randomBytes(count: size)
             try save(bytes, account: account)
@@ -105,6 +115,7 @@ extension KeychainError: LocalizedError {
         case .notFound: return "Item not found in Keychain"
         case .dataConversionFailure: return "Failed to decode Keychain data"
         case .randomGenerationFailed(let s): return "Secure random generation failed (OSStatus \(s))"
+        case .invalidSecretLength: return "Stored pairing secret has an invalid length"
         }
     }
 }

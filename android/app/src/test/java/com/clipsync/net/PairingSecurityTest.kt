@@ -54,6 +54,31 @@ class PairingSecurityTest {
             assertNull(server.takeRequest(200, TimeUnit.MILLISECONDS))
         }
     }
+    @Test fun qrExchangePostsSingleUseSecretOnlyAfterPinValidation() {
+        val cert = HeldCertificate.Builder().build()
+        val secret = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 21 })
+        MockWebServer().use { server ->
+            server.useHttps(HandshakeCertificates.Builder().heldCertificate(cert).build().sslSocketFactory(), false)
+            server.enqueue(MockResponse().setBody(body()))
+            server.start()
+            val api = PairingApi()
+            api.pairWithQrSecret("localhost", server.port, secret, Fingerprint.spkiSha256Base64Url(cert.certificate))
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/pair", request.path)
+            assertEquals(secret, JSONObject(request.body.readUtf8()).getString("secret"))
+            val wrongPin = Fingerprint.spkiSha256Base64Url(HeldCertificate.Builder().build().certificate)
+            assertThrows(Exception::class.java) { api.pairWithQrSecret("localhost", server.port, secret, wrongPin) }
+            assertNull(server.takeRequest(200, TimeUnit.MILLISECONDS))
+        }
+        for (invalid in listOf("", "a".repeat(42), secret + "=", "!".repeat(43))) {
+            assertFalse(PairingApi.validQrSecret(invalid))
+            assertThrows(IllegalArgumentException::class.java) {
+                PairingApi().pairWithQrSecret("localhost", 443, invalid, secret)
+            }
+        }
+    }
+
     @Test fun rejectsOversizedPinnedResponseAndDoesNotFollowRedirect() {
         val certificate = HeldCertificate.Builder().build()
         val tls = HandshakeCertificates.Builder().heldCertificate(certificate).build()

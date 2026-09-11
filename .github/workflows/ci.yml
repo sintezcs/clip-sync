@@ -31,13 +31,13 @@ jobs:
             .github
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
 
       - name: Cache SPM packages
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('mac/ClipSync.xcodeproj/project.pbxproj') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('mac/ClipSync.xcodeproj/project.pbxproj', 'mac/**/Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
 
       - name: Cache DerivedData
@@ -54,8 +54,9 @@ jobs:
             -scheme ClipSync \
             -destination "platform=macOS" \
             -resultBundlePath build/results.xcresult \
+            -onlyUsePackageVersionsFromResolvedFile \
             -parallel-testing-enabled YES \
-            ARCHS=arm64 \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \

@@ -5,152 +5,86 @@ import Foundation
 import SwiftUI
 
 struct PairingView: View {
-    @State private var code: String
-    @State private var expiresAt: Date
+    @State private var session: PairingSession
     let hostname: String
     let port: Int
+    let fingerprint: String
     let onRefresh: () async -> PairingSession?
-
     @State private var remaining: TimeInterval = 0
     @State private var cachedQRImage: NSImage?
     @State private var isRefreshing = false
 
-    init(code: String, expiresAt: Date, hostname: String, port: Int,
+    init(session: PairingSession, hostname: String, port: Int, fingerprint: String,
          onRefresh: @escaping () async -> PairingSession?) {
-        self._code = State(initialValue: code)
-        self._expiresAt = State(initialValue: expiresAt)
-        self.hostname = hostname
-        self.port = port
+        self._session = State(initialValue: session)
+        self.hostname = hostname; self.port = port; self.fingerprint = fingerprint
         self.onRefresh = onRefresh
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Pair Device")
-                .font(.title2.weight(.semibold))
-            HStack(spacing: 8) {
-                ForEach(0..<6, id: \.self) { i in
-                    let chars = Array(code)
-                    let digit = i < chars.count ? String(chars[i]) : ""
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color(NSColor.controlBackgroundColor))
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                        Text(digit)
-                            .font(.system(size: 28, weight: .semibold, design: .monospaced))
-                    }
-                    .frame(width: 44, height: 52)
-                }
-            }
-            if let qr = cachedQRImage {
-                Image(nsImage: qr)
-                    .interpolation(.none)
-                    .resizable()
-                    .frame(width: 220, height: 220)
-            }
-            Text(remaining > 0
-                 ? String(format: "Expires in %d:%02d", Int(remaining) / 60, Int(remaining) % 60)
-                 : "Expired")
-                .font(.system(.title3, design: .monospaced))
-                .foregroundStyle(remaining <= 30 ? .red : .secondary)
-            Text(pairingURL)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            Button {
-                Task { await refresh() }
-            } label: {
-                Label("New Code", systemImage: "arrow.clockwise")
-            }
-            .disabled(isRefreshing)
+        VStack(spacing: 16) {
+            Text("Pair your phone").font(.title2.weight(.semibold))
+            Text("Scan this code on your phone, then review and confirm the connection.")
+                .font(.callout).multilineTextAlignment(.center)
+            if let qr = cachedQRImage, remaining > 0 {
+                Image(nsImage: qr).interpolation(.none).resizable().frame(width: 220, height: 220)
+            } else { Text("Pairing expired").frame(width: 220, height: 220) }
+            Text("\(hostname):\(port)").font(.caption).textSelection(.enabled)
+            Text("Server fingerprint").font(.headline)
+            Text(fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Manual pairing code: \(session.code)").font(.system(.title3, design: .monospaced)).textSelection(.enabled)
+            Text("For manual setup, compare the complete fingerprint above before entering this code.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text(remaining > 0 ? String(format: "Expires in %d:%02d", Int(remaining) / 60, Int(remaining) % 60) : "Expired")
+                .font(.system(.callout, design: .monospaced)).foregroundStyle(remaining <= 30 ? .red : .secondary)
+            Button("New pairing code") { Task { await refresh() } }.disabled(isRefreshing)
         }
-        .padding(28)
-        .frame(width: 380, height: 510)
-        .onAppear {
-            cachedQRImage = Self.generateQRImage(for: pairingURL)
-            updateRemaining()
-        }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            updateRemaining()
-        }
+        .padding(24).frame(width: 420, height: 590)
+        .onAppear { regenerateQR(); updateRemaining() }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in updateRemaining() }
     }
-
     private func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
-        guard let session = await onRefresh() else { return }
-        code = session.code
-        expiresAt = session.expiresAt
-        cachedQRImage = Self.generateQRImage(for: pairingURL)
-        updateRemaining()
+        guard let next = await onRefresh() else { return }
+        session = next; regenerateQR(); updateRemaining()
     }
-
-    private var pairingURL: String {
-        "clipsync://pair?host=\(hostname)&port=\(port)&code=\(code)"
-    }
-
-    private func updateRemaining() {
-        remaining = max(0, expiresAt.timeIntervalSinceNow)
-    }
-
-    private static func generateQRImage(for string: String) -> NSImage? {
+    private func updateRemaining() { remaining = max(0, session.expiresAt.timeIntervalSinceNow) }
+    private func regenerateQR() {
         let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(string.utf8)
+        filter.message = Data(session.url(hostname: hostname, port: port, fingerprint: fingerprint).utf8)
         filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
+        guard let output = filter.outputImage else { cachedQRImage = nil; return }
         let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
-        let context = CIContext()
-        guard let cg = context.createCGImage(scaled, from: scaled.extent) else { return nil }
-        let size = NSSize(width: scaled.extent.width, height: scaled.extent.height)
-        return NSImage(cgImage: cg, size: size)
+        guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { cachedQRImage = nil; return }
+        cachedQRImage = NSImage(cgImage: cg, size: NSSize(width: scaled.extent.width, height: scaled.extent.height))
     }
 }
 
 @MainActor
-final class PairingWindowController {
+final class PairingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
-    private var shownCode: String?
-
-    private static let windowSize = NSSize(width: 380, height: 510)
-
-    func show(code: String, expiresAt: Date, hostname: String, port: Int,
-              onRefresh: @escaping () async -> PairingSession?) {
-        if let window, shownCode == code {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        // Code changed (new session) — close stale window and open fresh one.
-        window?.close()
-        window = nil
-        shownCode = code
-
-        let view = PairingView(
-            code: code,
-            expiresAt: expiresAt,
-            hostname: hostname,
-            port: port,
-            onRefresh: onRefresh
-        )
-        let hosting = NSHostingController(rootView: view)
+    private var shownSessionID: String?
+    private var onClose: (() -> Void)?
+    func show(session: PairingSession, hostname: String, port: Int, fingerprint: String,
+              onRefresh: @escaping () async -> PairingSession?, onClose: @escaping () -> Void) {
+        if let window, shownSessionID == session.id { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        close()
+        shownSessionID = session.id
+        self.onClose = onClose
+        let hosting = NSHostingController(rootView: PairingView(session: session, hostname: hostname, port: port,
+            fingerprint: fingerprint, onRefresh: onRefresh))
         hosting.sizingOptions = []
         let win = NSWindow(contentViewController: hosting)
-        win.title = "Pair Device"
-        win.styleMask = [.titled, .closable]
-        win.isReleasedWhenClosed = false
-        win.setContentSize(Self.windowSize)
-        win.contentMinSize = Self.windowSize
-        win.contentMaxSize = Self.windowSize
-        win.center()
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        window = win
+        win.title = "Pair your phone"; win.styleMask = [.titled, .closable]; win.isReleasedWhenClosed = false
+        let size = NSSize(width: 420, height: 590)
+        win.setContentSize(size); win.contentMinSize = size; win.contentMaxSize = size
+        win.delegate = self; win.center(); window = win
+        win.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
-
-    func close() {
-        window?.close()
-        window = nil
-        shownCode = nil
+    func windowWillClose(_ notification: Notification) {
+        let action = onClose; onClose = nil; window = nil; shownSessionID = nil; action?()
     }
+    func close() { window?.close(); window = nil; shownSessionID = nil }
 }

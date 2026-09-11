@@ -3,14 +3,14 @@ package com.clipsync.net
 import com.clipsync.crypto.Fingerprint
 import com.clipsync.crypto.HmacSigner
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 
-/** Legacy /pair exchange. The caller MUST compare the pin on the Mac independently.
- * mDNS is only an endpoint hint. A high-entropy single-use QR exchange requires a Mac update.
- */
+/** Pinned manual or v2 QR pairing. mDNS never establishes trust. */
 class PairingApi(private val clientFactory: ClipClient = ClipClient()) {
     data class PairingResponse(val token: String, val sig: String, val secret: String)
 
@@ -19,9 +19,22 @@ class PairingApi(private val clientFactory: ClipClient = ClipClient()) {
         val url = ClipClient.endpoint(host, port, "/pair").newBuilder().addQueryParameter("code", code).build()
         val client = clientFactory.pinnedClient(host, fpBase64Url).newBuilder().callTimeout(15, TimeUnit.SECONDS).build()
         client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-            if (!response.isSuccessful) throw PairingException("Pairing failed (HTTP ${response.code})")
+            if (!response.isSuccessful) throw PairingException("Pairing failed (HTTP ${response.code})", response.code)
             val body = response.body ?: throw PairingException("Missing pairing response")
             val source = body.source()
+            if (source.request(MAX_RESPONSE_BYTES + 1)) throw PairingException("Pairing response too large")
+            return parseResponse(source.readUtf8())
+        }
+    }
+
+    fun pairWithQrSecret(host: String, port: Int, secret: String, fpBase64Url: String): PairingResponse {
+        require(validQrSecret(secret)) { "Invalid pairing link secret" }
+        val client = clientFactory.pinnedClient(host, fpBase64Url).newBuilder().callTimeout(15, TimeUnit.SECONDS).build()
+        val body = JSONObject().put("secret", secret).toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url(ClipClient.endpoint(host, port, "/pair")).post(body).build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw PairingException("Pairing failed (HTTP ${response.code})", response.code)
+            val source = response.body?.source() ?: throw PairingException("Missing pairing response")
             if (source.request(MAX_RESPONSE_BYTES + 1)) throw PairingException("Pairing response too large")
             return parseResponse(source.readUtf8())
         }
@@ -34,9 +47,13 @@ class PairingApi(private val clientFactory: ClipClient = ClipClient()) {
             .execute().use { require(it.isSuccessful) { "Health check failed" }; true }
     }
 
-    class PairingException(message: String) : Exception(message)
+    class PairingException(message: String, val httpStatus: Int? = null) : Exception(message)
     companion object {
         private const val MAX_RESPONSE_BYTES = 4096L
+        fun validQrSecret(secret: String): Boolean = runCatching {
+            secret.length == 43 && Base64.getUrlEncoder().withoutPadding().encodeToString(
+                Base64.getUrlDecoder().decode(secret).also { require(it.size == 32) }) == secret
+        }.getOrDefault(false)
         fun pinFor(fpBase64Url: String): String = Fingerprint.okHttpPin(fpBase64Url)
         fun decodeSecret(secret: String): ByteArray = decode32(secret)
         private fun decode32(value: String): ByteArray {

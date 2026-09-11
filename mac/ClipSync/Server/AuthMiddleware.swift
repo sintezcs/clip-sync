@@ -19,7 +19,7 @@ struct AuthMiddleware<Context: RequestContext>: RouterMiddleware {
 
     init(tokenStore: TokenStore,
          hmacValidator: HMACValidator,
-         maxBodySize: Int = 25 * 1024 * 1024) {
+         maxBodySize: Int = 12 * 1024 * 1024) {
         self.tokenStore = tokenStore
         self.hmacValidator = hmacValidator
         self.maxBodySize = maxBodySize
@@ -30,7 +30,7 @@ struct AuthMiddleware<Context: RequestContext>: RouterMiddleware {
                 next: (Request, Context) async throws -> Response) async throws -> Response {
         let path = request.uri.path
         // Open endpoints: /health and /pair do not require auth.
-        if path == "/health" || path.hasPrefix("/pair") {
+        if path == "/health" || path == "/pair" {
             return try await next(request, context)
         }
 
