@@ -108,6 +108,21 @@ class ShizukuClipboardManager(private val context: Context) {
     fun isAvailable(): Boolean =
         state == State.READY && userService?.asBinder()?.pingBinder() == true
 
+    /** Call from IO dispatcher. Failure is distinct from a successfully empty clipboard. */
+    fun getClipboardSnapshot(): ClipboardSnapshot? {
+        val service = userService ?: return null
+        return ClipboardSnapshot.fromBundle(service.clipboardSnapshot)
+    }
+
+    fun getClipboardImage(snapshot: ClipboardSnapshot): ByteArray {
+        val service = checkNotNull(userService) { "Clipboard helper unavailable" }
+        val fd = service.openClipboardImage(snapshot.identity)
+        return android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use {
+            com.clipsync.model.ClipPayloadBuilder.readBounded(it, 8 * 1024 * 1024)
+                .also { bytes -> com.clipsync.images.ImageSafety.validate(bytes, requireNotNull(snapshot.mime)) }
+        }
+    }
+
     fun getClipboardText(): String? =
         runCatching { userService?.clipboardText }.getOrNull()
 
@@ -155,9 +170,10 @@ class ShizukuClipboardManager(private val context: Context) {
         Shizuku.UserServiceArgs(
             ComponentName(context.packageName, ClipboardUserService::class.java.name)
         )
+            .tag("clipsync-clipboard-helper")
             .processNameSuffix("clipboard")
             .debuggable(false)
-            .version(2)
+            .version(3)
 
     private fun bindUserService() {
         updateState(State.BINDING)

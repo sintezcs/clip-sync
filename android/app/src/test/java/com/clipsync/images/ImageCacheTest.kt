@@ -48,13 +48,26 @@ class ImageCacheTest {
         val oldFile = cache.writeToFile(byteArrayOf(1), "png")
         val now = System.currentTimeMillis()
         // 48h in the past
-        assertTrue(oldFile.setLastModified(now - 48L * 3600_000L))
         val fresh = cache.writeToFile(byteArrayOf(2), "png")
+        assertTrue(oldFile.setLastModified(now - 48L * 3600_000L))
 
         val deleted = cache.cleanupOlderThan(maxAgeMs = 24L * 3600_000L, now = now)
         assertEquals(1, deleted)
         assertFalse(oldFile.exists())
         assertTrue(fresh.exists())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun remote_extension_cannot_escape_cache() {
+        newCache(tmp.newFolder("escape")).writeToFile(byteArrayOf(1), "png/../../outside")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun oversized_image_is_rejected_before_writing() {
+        val root = tmp.newFolder("oversize")
+        try {
+            newCache(root).writeToFile(ByteArray(8 * 1024 * 1024 + 1), "png")
+        } finally { assertTrue(root.listFiles()!!.isEmpty()) }
     }
 
     @Test

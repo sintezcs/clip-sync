@@ -59,3 +59,6 @@
 # --- Shizuku ---
 -keep class rikka.shizuku.** { *; }
 -keep class moe.shizuku.** { *; }
+
+# Constructed by Shizuku in an external shell process through reflection.
+-keep class com.clipsync.shizuku.ClipboardUserService { *; }

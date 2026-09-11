@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.net.Uri
 import android.os.Build
-import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.content.pm.PackageManager
@@ -24,9 +23,6 @@ import com.clipsync.model.AppError
 import com.clipsync.model.ErrorAction
 import com.clipsync.model.ErrorSeverity
 import com.clipsync.util.L
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -37,15 +33,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-
-sealed class ShizukuInstallState {
-    data object Idle : ShizukuInstallState()
-    data object Fetching : ShizukuInstallState()
-    data class Downloading(val progress: Int) : ShizukuInstallState()  // 0–100
-    data class ReadyToInstall(val file: File) : ShizukuInstallState()
-    data class Error(val message: String) : ShizukuInstallState()
-}
 
 sealed class TailscaleState {
     data object Unknown : TailscaleState()
@@ -67,17 +54,18 @@ data class SettingsState(
     val status: ConnectionStatus = ConnectionStatus.Disconnected,
     val hasPairing: Boolean = false,
     val pairedHost: String? = null,
+    val pairedName: String? = null,
     val pairedPort: Int = Prefs.DEFAULT_PORT,
     val syncEnabled: Boolean = true,
     val autoSendEnabled: Boolean = true,
     val mediaPermissionGranted: Boolean = false,
     val notificationPermissionGranted: Boolean = false,
     val shizukuState: String = "not_checked",
-    val shizukuInstall: ShizukuInstallState = ShizukuInstallState.Idle,
     val tailscaleState: TailscaleState = TailscaleState.Unknown,
     val isOnMobileData: Boolean = false,
     val isOnWifi: Boolean = false,
     val isTailscaleVpnActive: Boolean = false,
+    val pairingInProgress: Boolean = false,
     val errors: List<AppError> = emptyList()
 )
 
@@ -86,6 +74,25 @@ class SettingsViewModel : ViewModel() {
     private val _state = MutableStateFlow(SettingsState())
     val state: StateFlow<SettingsState> = _state.asStateFlow()
 
+    // Secrets live only in this ViewModel's short-lived session, never SavedState or preferences.
+    val pairingCode = MutableStateFlow("")
+    private var pairingExpiry: Job? = null
+    fun updatePairingCode(code: String) {
+        pairingCode.value = code.take(6)
+        if (pairingExpiry == null && code.isNotEmpty()) {
+            pairingExpiry = viewModelScope.launch {
+                delay(120_000)
+                clearPairingCode()
+            }
+        }
+    }
+    fun clearPairingCode() {
+        pairingCode.value = ""
+        pairingExpiry?.cancel()
+        pairingExpiry = null
+    }
+
+    private var bootstrapped = false
     private var discoveryJob: Job? = null
     private var networkWatchJob: Job? = null
 
@@ -99,7 +106,9 @@ class SettingsViewModel : ViewModel() {
     }
 
     fun bootstrap(context: Context) {
+        if (bootstrapped) { refreshOnResume(context); return }
         try {
+            bootstrapped = true
             val prefs = Prefs(context)
             val paired = prefs.hasPairing()
 
@@ -114,10 +123,11 @@ class SettingsViewModel : ViewModel() {
                 notificationPermissionGranted = hasNotificationPermission(context),
                 hasPairing = paired,
                 pairedHost = prefs.host,
+                pairedName = prefs.peerName,
                 pairedPort = prefs.port,
                 status = if (paired) ConnectionStatus.Connecting else ConnectionStatus.Disconnected
             )
-            startDiscovery(context)
+            if (!paired) startDiscovery(context)
             refreshShizukuState(context)
             refreshTailscaleState(context)
             startNetworkWatch(context)
@@ -130,16 +140,13 @@ class SettingsViewModel : ViewModel() {
                         is ClipForegroundService.ServiceState.Connected -> ConnectionStatus.Connected(svcState.host)
                         is ClipForegroundService.ServiceState.Paused -> ConnectionStatus.Paused(svcState.host)
                     }
-                    _state.value = _state.value.copy(status = newStatus)
+                    _state.value = _state.value.copy(status = newStatus, syncEnabled = prefs.syncEnabled, pairedHost = prefs.host)
 
-                    // Restart discovery when disconnected so Mac reappears in list
-                    if (svcState is ClipForegroundService.ServiceState.Disconnected && _state.value.hasPairing) {
-                        delay(2000)
-                        startDiscovery(context.applicationContext)
-                    }
+
                 }
             }
         } catch (t: Throwable) {
+            bootstrapped = false
             L.error(M, "bootstrap failed reading prefs", t)
             addError(AppError(
                 severity = ErrorSeverity.ERROR,
@@ -163,63 +170,19 @@ class SettingsViewModel : ViewModel() {
         val prefs = Prefs(context)
         prefs.autoSendEnabled = enabled
         _state.value = _state.value.copy(autoSendEnabled = enabled)
-        ClipForegroundService.refreshNotification(context)
+        if (prefs.hasPairing() && prefs.syncEnabled) ClipForegroundService.refreshNotification(context)
     }
 
     fun startSync(context: Context) {
         L.action(M, "startSync")
         val prefs = Prefs(context)
         val host = prefs.host ?: ""
-        val port = prefs.port
-        val fp = prefs.fp
-
-        if (isTailscaleHost(host) && !_state.value.isTailscaleVpnActive) {
-            L.warn(M, "startSync blocked: Tailscale IP but VPN not active")
-            _state.value = _state.value.copy(
-                status = ConnectionStatus.Error("Tailscale VPN is not active. Open Tailscale first.")
-            )
-            addError(AppError(
-                severity = ErrorSeverity.ERROR,
-                summary = "Tailscale VPN is not active",
-                detail = "The host $host is a Tailscale address but the VPN is not connected.",
-                suggestion = "Open Tailscale and connect, then try again.",
-                action = ErrorAction.Retry,
-            ))
-            return
-        }
+        if (!prefs.hasPairing()) return
 
         prefs.syncEnabled = true
         _state.value = _state.value.copy(syncEnabled = true, status = ConnectionStatus.Connecting)
         ClipForegroundService.start(context)
 
-        viewModelScope.launch {
-            if (fp != null) {
-                val result = withContext(Dispatchers.IO) { PairingApi().ping(host, port, fp) }
-                result.fold(
-                    onSuccess = { alive ->
-                        _state.value = _state.value.copy(
-                            status = if (alive) ConnectionStatus.Connected(host)
-                                     else ConnectionStatus.Error("Could not reach $host")
-                        )
-                    },
-                    onFailure = { error ->
-                        _state.value = _state.value.copy(
-                            status = ConnectionStatus.Error("Could not reach $host")
-                        )
-                        addError(AppError(
-                            severity = ErrorSeverity.WARNING,
-                            summary = "Server not responding",
-                            detail = error.message,
-                            suggestion = "Check that the Mac is running ClipSync.",
-                        ))
-                    }
-                )
-            } else {
-                _state.value = _state.value.copy(
-                    status = ConnectionStatus.Error("Could not reach $host")
-                )
-            }
-        }
     }
 
     fun stopSync(context: Context) {
@@ -237,11 +200,13 @@ class SettingsViewModel : ViewModel() {
         _state.value = _state.value.copy(
             hasPairing = false,
             pairedHost = null,
+            pairedName = null,
             pairedPort = Prefs.DEFAULT_PORT,
             syncEnabled = false,
             status = ConnectionStatus.Disconnected,
             errors = emptyList()
         )
+        startDiscovery(context.applicationContext)
     }
 
     fun startDiscovery(context: Context) {
@@ -292,57 +257,33 @@ class SettingsViewModel : ViewModel() {
         }
     }
 
-    fun pair(context: Context, target: PairingTarget, code: String) {
+    fun pair(context: Context, target: PairingTarget, code: String, verifiedFingerprint: String, replaceExisting: Boolean = false) {
+        if (_state.value.pairingInProgress) return
+        if (Prefs(context).hasPairing() && !replaceExisting) return
+        if (!verifiedFingerprint.matches(Regex("[A-Za-z0-9_-]{43}")) || !code.matches(Regex("[0-9]{6}"))) return
         val targetLabel = when (target) {
             is PairingTarget.Auto -> "${target.discovered.host}:${target.discovered.port}"
             is PairingTarget.Manual -> "${target.host}:${target.port}"
         }
         L.action(M, "pair target=$targetLabel")
 
-        if (target is PairingTarget.Manual && isTailscaleHost(target.host) && !_state.value.isTailscaleVpnActive) {
-            L.warn(M, "pair blocked: Tailscale IP but VPN not active")
-            _state.value = _state.value.copy(
-                status = ConnectionStatus.Error("Tailscale VPN is not active. Open Tailscale first.")
-            )
-            addError(AppError(
-                severity = ErrorSeverity.ERROR,
-                summary = "Tailscale VPN is not active",
-                detail = "The host ${target.host} is a Tailscale address but the VPN is not connected.",
-                suggestion = "Open Tailscale and connect, then try again.",
-                action = ErrorAction.Retry,
-            ))
-            return
-        }
-
+        _state.value = _state.value.copy(pairingInProgress = true)
         viewModelScope.launch {
             _state.value = _state.value.copy(status = ConnectionStatus.Connecting, errors = emptyList())
             try {
                 val prefs = Prefs(context)
                 val api = PairingApi()
 
-                when (target) {
-                    is PairingTarget.Auto -> {
-                        val d = target.discovered
-                        val fp = d.fp
-                        if (fp.isNullOrEmpty()) {
-                            val resp = withContext(Dispatchers.IO) {
-                                api.pairWithTofu(d.host, d.port, code)
-                            }
-                            persistAndStart(context, prefs, d.host, d.port, resp.token, resp.fpBase64Url, resp.secret, Prefs.MODE_AUTO)
-                        } else {
-                            val resp = withContext(Dispatchers.IO) {
-                                api.pairWithKnownFp(d.host, d.port, code, fp)
-                            }
-                            persistAndStart(context, prefs, d.host, d.port, resp.token, fp, resp.secret, Prefs.MODE_AUTO)
-                        }
-                    }
-                    is PairingTarget.Manual -> {
-                        val resp = withContext(Dispatchers.IO) {
-                            api.pairWithTofu(target.host, target.port, code)
-                        }
-                        persistAndStart(context, prefs, target.host, target.port, resp.token, resp.fpBase64Url, resp.secret, Prefs.MODE_MANUAL)
-                    }
+                val host = when (target) { is PairingTarget.Auto -> target.discovered.host; is PairingTarget.Manual -> target.host }
+                val port = when (target) { is PairingTarget.Auto -> target.discovered.port; is PairingTarget.Manual -> target.port }
+                val response = withContext(Dispatchers.IO) {
+                    api.pairWithKnownFp(host, port, code, verifiedFingerprint)
                 }
+                persistAndStart(context, prefs, host, port, response.token, verifiedFingerprint,
+                    response.secret, if (target is PairingTarget.Auto) Prefs.MODE_AUTO else Prefs.MODE_MANUAL,
+                    (target as? PairingTarget.Auto)?.discovered?.name)
+            } catch (t: CancellationException) {
+                throw t
             } catch (t: Throwable) {
                 L.error(M, "pair failed", t)
                 val appError = when {
@@ -351,7 +292,7 @@ class SettingsViewModel : ViewModel() {
                             severity = ErrorSeverity.ERROR,
                             summary = "Certificate mismatch",
                             detail = t.message,
-                            suggestion = "The Mac app regenerated its certificate. Re-pair to fix.",
+                            suggestion = "Stop and compare the fingerprint directly on your trusted Mac before pairing again.",
                             action = ErrorAction.Repair,
                         )
                     t is java.net.ConnectException ->
@@ -415,6 +356,8 @@ class SettingsViewModel : ViewModel() {
                     status = ConnectionStatus.Error(appError.summary)
                 )
                 addError(appError)
+            } finally {
+                _state.value = _state.value.copy(pairingInProgress = false)
             }
         }
     }
@@ -427,20 +370,19 @@ class SettingsViewModel : ViewModel() {
         token: String,
         fp: String,
         pairingSecret: String,
-        mode: String
+        mode: String,
+        peerName: String?
     ) {
         L.action(M, "pairSuccess host=$host port=$port mode=$mode")
-        prefs.host = host
-        prefs.port = port
-        prefs.token = token
-        prefs.fp = fp
-        prefs.pairingSecret = pairingSecret
-        prefs.mode = mode
-        prefs.syncEnabled = true
+        withContext(Dispatchers.IO) {
+            prefs.savePairing(host, port, token, fp, pairingSecret, mode, peerName)
+        }
+        discoveryJob?.cancel()
         _state.value = _state.value.copy(
             syncEnabled = true,
             hasPairing = true,
             pairedHost = host,
+            pairedName = peerName,
             pairedPort = port,
             mode = mode,
             status = ConnectionStatus.Connecting,
@@ -473,11 +415,16 @@ class SettingsViewModel : ViewModel() {
     }
 
     fun refreshOnResume(context: Context) {
+        val prefs = Prefs(context)
         val mediaGranted = hasMediaPermission(context)
         val notifGranted = hasNotificationPermission(context)
         _state.value = _state.value.copy(
             mediaPermissionGranted = mediaGranted,
             notificationPermissionGranted = notifGranted,
+            syncEnabled = prefs.syncEnabled,
+            hasPairing = prefs.hasPairing(),
+            pairedHost = prefs.host,
+            pairedName = prefs.peerName,
         )
         refreshShizukuState(context)
         refreshTailscaleState(context)
@@ -506,94 +453,6 @@ class SettingsViewModel : ViewModel() {
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) ==
                 PackageManager.PERMISSION_GRANTED
         }
-    }
-
-    fun downloadShizuku(context: Context) {
-        // Ask for "install unknown apps" permission before starting the download,
-        // so the user doesn't wait for the full download only to hit a permission wall.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (!context.packageManager.canRequestPackageInstalls()) {
-                context.startActivity(
-                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                )
-                return  // User must come back and tap Download again once permission is granted
-            }
-        }
-        viewModelScope.launch {
-            _state.value = _state.value.copy(shizukuInstall = ShizukuInstallState.Fetching)
-            try {
-                val apkUrl = withContext(Dispatchers.IO) { fetchLatestShizukuApkUrl() }
-                _state.value = _state.value.copy(shizukuInstall = ShizukuInstallState.Downloading(0))
-                val file = withContext(Dispatchers.IO) {
-                    downloadApk(context, apkUrl) { progress ->
-                        _state.value = _state.value.copy(
-                            shizukuInstall = ShizukuInstallState.Downloading(progress)
-                        )
-                    }
-                }
-                _state.value = _state.value.copy(shizukuInstall = ShizukuInstallState.ReadyToInstall(file))
-            } catch (t: Throwable) {
-                L.warn(M, "Shizuku download failed: ${t.message}")
-                _state.value = _state.value.copy(shizukuInstall = ShizukuInstallState.Error(t.message ?: "Download failed"))
-            }
-        }
-    }
-
-    fun installShizuku(context: Context, file: File) {
-        val uri = FileProvider.getUriForFile(context, "com.clipsync.fileprovider", file)
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-        )
-    }
-
-    fun resetShizukuInstall() {
-        _state.value = _state.value.copy(shizukuInstall = ShizukuInstallState.Idle)
-    }
-
-    private fun fetchLatestShizukuApkUrl(): String {
-        val client = OkHttpClient()
-        val req = Request.Builder()
-            .url("https://api.github.com/repos/RikkaApps/Shizuku/releases/latest")
-            .addHeader("Accept", "application/vnd.github.v3+json")
-            .build()
-        val body = client.newCall(req).execute().use { it.body?.string() }
-            ?: throw Exception("Empty response from GitHub API")
-        val assets = JSONObject(body).getJSONArray("assets")
-        for (i in 0 until assets.length()) {
-            val asset = assets.getJSONObject(i)
-            if (asset.getString("name").endsWith(".apk")) {
-                return asset.getString("browser_download_url")
-            }
-        }
-        throw Exception("No APK asset found in latest Shizuku release")
-    }
-
-    private fun downloadApk(context: Context, url: String, onProgress: (Int) -> Unit): File {
-        val client = OkHttpClient()
-        val response = client.newCall(Request.Builder().url(url).build()).execute()
-        val body = response.body ?: throw Exception("Empty download body")
-        val length = body.contentLength()
-        val dir = File(context.cacheDir, "clipsync").also { it.mkdirs() }
-        val file = File(dir, "shizuku.apk")
-        var downloaded = 0L
-        file.outputStream().use { out ->
-            body.byteStream().use { input ->
-                val buf = ByteArray(8192)
-                var read: Int
-                while (input.read(buf).also { read = it } != -1) {
-                    out.write(buf, 0, read)
-                    downloaded += read
-                    if (length > 0) onProgress((downloaded * 100 / length).toInt())
-                }
-            }
-        }
-        return file
     }
 
     fun requestShizukuPermission() {
@@ -636,22 +495,6 @@ class SettingsViewModel : ViewModel() {
                 val vpnActive = withContext(Dispatchers.IO) { isTailscaleVpnActive(appContext) }
                 val prev = _state.value
 
-                // Service clears host on network change (auto mode) → prompt re-pair
-                val currentHost = Prefs(appContext).host
-                if (prev.hasPairing && currentHost == null) {
-                    L.event(M, "host cleared by service: prompting re-pair")
-                    _state.value = prev.copy(
-                        hasPairing = false,
-                        pairedHost = null,
-                        status = ConnectionStatus.Disconnected,
-                        isOnWifi = onWifi,
-                        isOnMobileData = onMobile,
-                        isTailscaleVpnActive = vpnActive,
-                    )
-                    startDiscovery(appContext)
-                    continue
-                }
-
                 if (onWifi != prev.isOnWifi || onMobile != prev.isOnMobileData || vpnActive != prev.isTailscaleVpnActive) {
                     L.event(M, "network changed: wifi=$onWifi mobile=$onMobile vpn=$vpnActive")
                     _state.value = prev.copy(
@@ -659,7 +502,7 @@ class SettingsViewModel : ViewModel() {
                         isOnMobileData = onMobile,
                         isTailscaleVpnActive = vpnActive,
                     )
-                    startDiscovery(appContext)
+                    if (!_state.value.hasPairing) startDiscovery(appContext)
                 }
             }
         }

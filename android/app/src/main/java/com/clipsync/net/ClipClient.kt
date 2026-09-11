@@ -11,41 +11,29 @@ import okhttp3.WebSocketListener
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLSession
 import javax.net.ssl.X509TrustManager
 
-/**
- * Factory for the two flavours of [OkHttpClient] we need:
- *
- *  - [pinnedClient]: production client with manual SPKI-SHA256 pin
- *    verification for the known server fingerprint.  This is what normal
- *    connections go through.
- *
- *  - [tofuClient]: first-connect permissive client that doesn't validate the
- *    cert chain against system CAs (the server is self-signed), but
- *    captures the presented leaf cert's SPKI-SHA256 so the caller can pin
- *    it for subsequent connections. Returned alongside the client is a
- *    holder whose [FpHolder.fpBase64Url] is populated after the first
- *    successful handshake.
- *
- * Also provides [connectWebSocket] for `GET /ws` with Bearer auth.
- */
+/** HTTPS transport authenticated by an independently verified SPKI pin. */
 class ClipClient {
 
     fun pinnedClient(host: String, fpBase64Url: String): OkHttpClient {
+        val expected = Fingerprint.decodePin(fpBase64Url)
+        val expectedHost = endpoint(host, 443, "/").host
         // OkHttp's CertificatePinner cannot work with a custom TrustManager
         // (it needs the system chain cleaner to build the peer cert list).
         // Instead we verify the SPKI-SHA256 fingerprint manually inside the
         // TrustManager — equally secure, compatible with self-signed certs.
         val trustPinned = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+                throw java.security.cert.CertificateException("Client certificate validation is unsupported")
+            }
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
                 val leaf = chain?.firstOrNull()
                     ?: throw java.security.cert.CertificateException("Empty certificate chain")
                 val actual = Fingerprint.spkiSha256Base64Url(leaf)
-                if (actual != fpBase64Url) {
+                if (!java.security.MessageDigest.isEqual(Fingerprint.decodePin(actual), expected)) {
                     throw java.security.cert.CertificateException(
-                        "SPKI pin mismatch! Expected=$fpBase64Url Actual=$actual"
+                        "SPKI pin mismatch"
                     )
                 }
             }
@@ -55,31 +43,8 @@ class ClipClient {
         sslContext.init(null, arrayOf(trustPinned), java.security.SecureRandom())
         return baseBuilder()
             .sslSocketFactory(sslContext.socketFactory, trustPinned)
-            .hostnameVerifier { _, _ -> true } // self-signed cert, CN may not match IP
+            .hostnameVerifier { requestedHost, _ -> requestedHost == expectedHost }
             .build()
-    }
-
-    class FpHolder {
-        @Volatile var fpBase64Url: String? = null
-    }
-
-    fun tofuClient(): Pair<OkHttpClient, FpHolder> {
-        val holder = FpHolder()
-        val trustAll = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                val leaf = chain?.firstOrNull() ?: return
-                holder.fpBase64Url = Fingerprint.spkiSha256Base64Url(leaf)
-            }
-            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        }
-        val sslContext = SSLContext.getInstance("TLS")
-        sslContext.init(null, arrayOf(trustAll), java.security.SecureRandom())
-        val client = baseBuilder()
-            .sslSocketFactory(sslContext.socketFactory, trustAll)
-            .hostnameVerifier { _: String, _: SSLSession -> true }
-            .build()
-        return client to holder
     }
 
     fun connectWebSocket(
@@ -90,8 +55,9 @@ class ClipClient {
         onFrame: (ClipPayload) -> Unit,
         onStatus: (WsStatus) -> Unit
     ): WebSocket {
+        validateToken(token)
         val req = Request.Builder()
-            .url("https://$host:$port/ws")
+            .url(endpoint(host, port, "/ws"))
             .header("Authorization", "Bearer $token")
             .build()
         val listener = object : WebSocketListener() {
@@ -102,8 +68,8 @@ class ClipClient {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val payload = try {
                     ClipPayload.fromJson(text)
-                } catch (t: Throwable) {
-                    onStatus(WsStatus.Error("bad frame: ${t.message}"))
+                } catch (t: Exception) {
+                    onStatus(WsStatus.Error("Invalid clipboard frame"))
                     return
                 }
                 onFrame(payload)
@@ -121,6 +87,17 @@ class ClipClient {
         return client.newWebSocket(req, listener)
     }
 
+    companion object {
+        fun endpoint(host: String, port: Int, path: String): okhttp3.HttpUrl {
+            require(host.isNotBlank() && host.length <= 253 && host.none { it.isWhitespace() || it in "/\\?#@%" }) { "Invalid host" }
+            require(port in 1..65535) { "Invalid port" }
+            return okhttp3.HttpUrl.Builder().scheme("https").host(host).port(port).encodedPath(path).build()
+        }
+        fun validateToken(token: String) {
+            require(token.length in 32..512 && token.all { it.isLetterOrDigit() && it.code < 128 || it in "+/=_-" }) { "Invalid token" }
+        }
+    }
+
     sealed class WsStatus {
         data object Open : WsStatus()
         data class Closed(val code: Int, val reason: String) : WsStatus()
@@ -132,5 +109,7 @@ class ClipClient {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
+        .retryOnConnectionFailure(false)
+        .followRedirects(false)
+        .followSslRedirects(false)
 }

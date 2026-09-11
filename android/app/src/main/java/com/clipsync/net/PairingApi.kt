@@ -1,96 +1,66 @@
 package com.clipsync.net
 
 import com.clipsync.crypto.Fingerprint
-import okhttp3.OkHttpClient
+import com.clipsync.crypto.HmacSigner
 import okhttp3.Request
-import java.util.concurrent.TimeUnit
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.util.Base64
+import java.util.concurrent.TimeUnit
 
-/**
- * Performs the `GET /pair?code=XXXXXX` handshake against the mac server.
- *
- * Two entry points depending on trust context:
- *
- *  - [pairWithKnownFp]: the caller already knows the server's SPKI-SHA256
- *    fingerprint (e.g. learned via mDNS TXT). We pin the connection before
- *    sending the request — classic pinning.
- *
- *  - [pairWithTofu]: TOFU path for manual-IP mode. We build a one-shot
- *    permissive client that records the cert presented during the TLS
- *    handshake, then let the caller persist that fp for future pinning.
+/** Legacy /pair exchange. The caller MUST compare the pin on the Mac independently.
+ * mDNS is only an endpoint hint. A high-entropy single-use QR exchange requires a Mac update.
  */
-class PairingApi(
-    private val clientFactory: ClipClient = ClipClient()
-) {
-
-    data class PairingResponse(
-        val token: String,
-        val sig: String,
-        /** Base64-encoded pairing-secret used to HMAC-sign `POST /inject`. */
-        val secret: String
-    )
-
-    data class TofuPairingResponse(
-        val token: String,
-        val sig: String,
-        val secret: String,
-        val fpBase64Url: String
-    )
+class PairingApi(private val clientFactory: ClipClient = ClipClient()) {
+    data class PairingResponse(val token: String, val sig: String, val secret: String)
 
     fun pairWithKnownFp(host: String, port: Int, code: String, fpBase64Url: String): PairingResponse {
-        val client = clientFactory.pinnedClient(host, fpBase64Url)
-        return requestPair(client, host, port, code)
-    }
-
-    fun pairWithTofu(host: String, port: Int, code: String): TofuPairingResponse {
-        val (client, fpHolder) = clientFactory.tofuClient()
-        val resp = requestPair(client, host, port, code)
-        val fp = fpHolder.fpBase64Url
-            ?: throw IllegalStateException("TOFU client did not capture server cert fingerprint")
-        return TofuPairingResponse(resp.token, resp.sig, resp.secret, fp)
-    }
-
-    private fun requestPair(client: OkHttpClient, host: String, port: Int, code: String): PairingResponse {
-        val url = "https://$host:$port/pair?code=$code"
-        val req = Request.Builder().url(url).get().build()
-        val configured = client.newBuilder()
-            .callTimeout(15, TimeUnit.SECONDS)
-            .build()
-        configured.newCall(req).execute().use { resp ->
-            val body = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                throw PairingException("HTTP ${resp.code}: $body")
-            }
-            val json = JSONObject(body)
-            val token = json.optString("token", "")
-            val sig = json.optString("sig", "")
-            val secret = json.optString("secret", "")
-            if (token.isEmpty() || sig.isEmpty() || secret.isEmpty()) {
-                throw PairingException("Malformed /pair response: $body")
-            }
-            return PairingResponse(token, sig, secret)
+        require(code.matches(Regex("[0-9]{6}"))) { "Pairing code must be six digits" }
+        val url = ClipClient.endpoint(host, port, "/pair").newBuilder().addQueryParameter("code", code).build()
+        val client = clientFactory.pinnedClient(host, fpBase64Url).newBuilder().callTimeout(15, TimeUnit.SECONDS).build()
+        client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+            if (!response.isSuccessful) throw PairingException("Pairing failed (HTTP ${response.code})")
+            val body = response.body ?: throw PairingException("Missing pairing response")
+            val source = body.source()
+            if (source.request(MAX_RESPONSE_BYTES + 1)) throw PairingException("Pairing response too large")
+            return parseResponse(source.readUtf8())
         }
     }
 
-    /**
-     * Returns [Result.success] with `true` if the server at [host]:[port] responds to a ping.
-     * Returns [Result.failure] with the underlying exception on network or TLS errors.
-     * Uses the stored fingerprint for TLS pinning. Timeout: 3 seconds.
-     */
     fun ping(host: String, port: Int, fp: String): Result<Boolean> = runCatching {
-        val client = clientFactory.pinnedClient(host, fp)
-            .newBuilder()
-            .callTimeout(3, TimeUnit.SECONDS)
-            .connectTimeout(3, TimeUnit.SECONDS)
-            .build()
-        val req = Request.Builder().url("https://$host:$port/health").get().build()
-        client.newCall(req).execute().use { true }
+        val client = clientFactory.pinnedClient(host, fp).newBuilder()
+            .callTimeout(3, TimeUnit.SECONDS).connectTimeout(3, TimeUnit.SECONDS).build()
+        client.newCall(Request.Builder().url(ClipClient.endpoint(host, port, "/health")).get().build())
+            .execute().use { require(it.isSuccessful) { "Health check failed" }; true }
     }
 
     class PairingException(message: String) : Exception(message)
-
     companion object {
-        // Re-exposed for convenience / tests.
+        private const val MAX_RESPONSE_BYTES = 4096L
         fun pinFor(fpBase64Url: String): String = Fingerprint.okHttpPin(fpBase64Url)
+        fun decodeSecret(secret: String): ByteArray = decode32(secret)
+        private fun decode32(value: String): ByteArray {
+            require(value.length == 44) { "Invalid credential length" }
+            val bytes = Base64.getDecoder().decode(value)
+            require(bytes.size == 32 && Base64.getEncoder().encodeToString(bytes) == value) { "Invalid credential encoding" }
+            return bytes
+        }
+        internal fun parseResponse(body: String): PairingResponse {
+            try {
+                require(body.length <= MAX_RESPONSE_BYTES)
+                val json = JSONObject(body)
+                fun field(key: String): String = (json.get(key) as? String) ?: error("Invalid field")
+                val token = field("token")
+                val sig = field("sig")
+                val secret = field("secret")
+                val tokenBytes = decode32(token)
+                val secretBytes = decode32(secret)
+                // Consistency check only: identity comes from the independently verified TLS pin.
+                require(MessageDigest.isEqual(decode32(sig), HmacSigner.hmacSha256(secretBytes, tokenBytes)))
+                return PairingResponse(token, sig, secret)
+            } catch (_: Exception) {
+                throw PairingException("Malformed pairing response")
+            }
+        }
     }
 }

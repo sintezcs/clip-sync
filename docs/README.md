@@ -25,6 +25,7 @@
 
 | Document | Description |
 |----------|-------------|
+| [development/android-verification.md](development/android-verification.md) | Guarded audit-emulator verification and Android CI instrumentation |
 | [development/TODO.md](development/TODO.md) | Known issues, pending work, and tech debt |
 | [development/accessibility-service-plan.md](development/accessibility-service-plan.md) | Plan for Accessibility Service + Shizuku clipboard auto-read |
 | [development/plan-auto-clipboard-detection.md](development/plan-auto-clipboard-detection.md) | Plan for automatic clipboard change detection on Android |

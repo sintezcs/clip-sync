@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="2cristo7/clip-sync"
+REPO="sintezcs/clip-sync"
 API="https://api.github.com/repos/$REPO/releases/latest"
 
 # ── resolve latest version ───────────────────────────────────────────────────
