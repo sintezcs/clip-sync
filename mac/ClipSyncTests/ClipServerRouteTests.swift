@@ -172,3 +172,15 @@ final class ClipServerRouteTests: XCTestCase {
         XCTAssertEqual(writes, 0)
     }
 }
+
+extension ClipServerRouteTests {
+    func testTransportDefaultsPermitTheFullImageEnvelope() {
+        let rate = RateLimitMiddleware<ClipRequestContext>(rateLimiter: RateLimiter())
+        let auth = AuthMiddleware<ClipRequestContext>(tokenStore: TokenStore(keychain: MemoryKeys()),
+            hmacValidator: HMACValidator(secret: Data(repeating: 0xA5, count: 32)))
+        // Use injected storage; this boundary check never touches production Keychain.
+        XCTAssertEqual(rate.maxInjectBodyBytes, ClipPayload.maxJSONBytes)
+        XCTAssertEqual(auth.maxBodySize, ClipPayload.maxJSONBytes)
+        XCTAssertGreaterThan(auth.maxBodySize, 50 * 1024 * 1024)
+    }
+}

@@ -13,7 +13,7 @@ object ClipboardImageConverter {
     data class WireImage(val mime: String, val bytes: ByteArray)
     val INPUT_MIMES = setOf("image/png", "image/jpeg", "image/heic", "image/heif")
     private val HEIF_MIMES = setOf("image/heic", "image/heif")
-    const val MAX_BYTES = 8 * 1024 * 1024
+    const val MAX_BYTES = com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES
     const val MAX_DIMENSION = 8192
     const val MAX_PIXELS = 24_000_000L
 
@@ -48,37 +48,62 @@ object ClipboardImageConverter {
             validateDimensions(bitmap.width, bitmap.height)
             require(bitmap.allocationByteCount.toLong() <= MAX_PIXELS * 4) { "Decoded clipboard image exceeds memory limit" }
             val output = CappedImageOutput(MAX_BYTES)
-            check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)) { "Clipboard JPEG encoding failed" }
-            val jpeg = output.toByteArray()
-            ImageSafety.validate(jpeg, "image/jpeg")
-            return WireImage("image/jpeg", jpeg)
+            val encoded = bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            val png = output.toByteArray() // Preserve overflow even if the native encoder returned false.
+            check(encoded) { "Clipboard PNG encoding failed" }
+            ImageSafety.validate(png, "image/png")
+            return WireImage("image/png", png)
         } finally { bitmap.recycle() }
     }
 }
 
-/** Fixed capacity: native JPEG compression can never grow an unbounded output buffer. */
+class ClipboardImageOutputTooLarge : IllegalArgumentException("Converted image exceeds 50 MiB")
+
+/** Incremental chunks avoid reserving 50 MiB for a tiny image; overflow remains latched. */
 internal class CappedImageOutput(private val limit: Int) : OutputStream() {
-    private val bytes = ByteArray(limit.also { require(it in 1..ClipboardImageConverter.MAX_BYTES) })
+    private val chunks = ArrayList<ByteArray>()
     private var count = 0
     private var overflow = false
+    init { require(limit in 1..ClipboardImageConverter.MAX_BYTES) }
     override fun write(value: Int) {
         reserve(1)
-        bytes[count++] = value.toByte()
+        ensureChunk()
+        chunks.last()[count % CHUNK_SIZE] = value.toByte()
+        count++
     }
     override fun write(source: ByteArray, offset: Int, length: Int) {
         require(offset >= 0 && length >= 0 && offset <= source.size - length)
         reserve(length)
-        source.copyInto(bytes, count, offset, offset + length)
-        count += length
+        var copied = 0
+        while (copied < length) {
+            ensureChunk()
+            val chunk = chunks.last()
+            val inChunk = count % CHUNK_SIZE
+            val amount = minOf(length - copied, chunk.size - inChunk)
+            source.copyInto(chunk, inChunk, offset + copied, offset + copied + amount)
+            count += amount
+            copied += amount
+        }
+    }
+    private fun ensureChunk() {
+        if (count % CHUNK_SIZE == 0) chunks += ByteArray(minOf(CHUNK_SIZE, limit - count))
     }
     private fun reserve(length: Int) {
         if (overflow || length > limit - count) {
             overflow = true
-            throw IllegalArgumentException("Converted image exceeds output limit")
+            throw ClipboardImageOutputTooLarge()
         }
     }
     fun toByteArray(): ByteArray {
-        check(!overflow) { "Converted image output overflowed" }
-        return bytes.copyOf(count)
+        if (overflow) throw ClipboardImageOutputTooLarge()
+        val result = ByteArray(count)
+        var copied = 0
+        for (chunk in chunks) {
+            val length = minOf(chunk.size, count - copied)
+            chunk.copyInto(result, copied, 0, length)
+            copied += length
+        }
+        return result
     }
+    private companion object { const val CHUNK_SIZE = 64 * 1024 }
 }

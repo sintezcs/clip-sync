@@ -16,7 +16,7 @@ struct ClipRequestContext: RequestContext, ConnectionAddressContext {
 struct RateLimitMiddleware<Context: RequestContext>: RouterMiddleware {
     let rateLimiter: RateLimiter
     let maxInjectBodyBytes: Int
-    init(rateLimiter: RateLimiter, maxInjectBodyBytes: Int = 12 * 1024 * 1024) {
+    init(rateLimiter: RateLimiter, maxInjectBodyBytes: Int = ClipPayload.maxJSONBytes) {
         self.rateLimiter = rateLimiter; self.maxInjectBodyBytes = maxInjectBodyBytes
     }
     func handle(_ request: Request, context: Context,

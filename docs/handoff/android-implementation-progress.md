@@ -98,3 +98,20 @@ User confirmed Telegram → Mac works after the rich-text fix with normal servic
 The metadata-only probe identified actual Gallery input as `image/heic`,non-sensitive with a URI (`/tmp/klippa-gallery-metadata.log`). Added Android9+ bounded HEIC/HEIF→JPEG conversion through ImageDecoder (orientation/software/sRGB,8MiBinput/output,8192side/24MP,strictcurrentURIidentity),helperversion5. Old-app synthetic HEIC LAN failed (`/tmp/klippa-heic-red-*.log`); updated app passed (`/tmp/klippa-heic-green-*.log`,12.012s). Physical converter tests passed3 cases; isolated-emulator suite now16 executed+5 opt-in skips (`OK (21 tests)`). Debug/release/JVM/lint passed `/tmp/klippa-heic-final-build.log`. The initial synthetic color assertion was corrected to compare the JPEG against the decoded HEIC source; source HEIC itself differed from uncompressed ideal due to encoding/color conversion. A neutral fixture removes chroma ambiguity in the LAN check.
 
 Normalapp Ready and active foreground service were verified after all physical instrumentation before asking user to retry Gallery. Actual Gallery paste confirmation is pending; synthetic success is not its substitute.
+
+## PNG output and 50 MiB image limit — latest checkpoint
+
+The user confirmed both Telegram and Samsung Gallery paste on Mac, then requested PNG conversion and a 50 MiB limit. HEIC/HEIF now converts to PNG with exact decoded ARGB regression checks. Image input/output caps are 50 MiB on both platforms; the JSON envelope cap is 69,909,164 bytes (about 66.7 MiB). Text remains limited to 1 MiB, and images to 8192 pixels per side and 24 megapixels. General PDF/text-file transfer is not implemented; text copied inside a document is supported.
+
+Android uses one shared image budget, helper version 6, bounded 64 KiB output chunks, explicit 50 MiB overflow guidance, and a size-aware 15–45 second upload timeout with cancellation on peer changes or newer copies. The 64 MiB cache target preserves the current image and new candidate until application, then enforces the quota. Temporary disk use can approach 114 MiB while writing against an existing 64 MiB cache. The image limit is not a total RAM cap: base64, decoded bitmaps and serialization copies require additional memory.
+
+Verification:
+
+- `/tmp/klippa-50mib-final-android-build.log`: debug/release/test APK, unit tests and lint passed; 89 JVM tests, zero lint errors.
+- `/tmp/klippa-50mib-instrumentation.log`: 17 executed checks and six opt-in skips (`OK (23 tests)`).
+- `/tmp/klippa-mac-50mib-tests.log`: 94 tests passed in the default Mac suite.
+- `/tmp/klippa-mac-50mib-app.log`: clean app-only Debug build passed signature verification and was installed while preserving Keychain identity and pairing. The user approved renewed Keychain access.
+- `/tmp/klippa-large-lan-{mac,android}.log`: actual LAN transfer of valid 2048×1536 PNGs exceeding 8 MiB passed in both directions with exact pixel hashes (20.822 seconds).
+- `/tmp/klippa-50mib-png-lan-{mac,android}.log`: rich text, HEIC-to-PNG and Mac PNG passed with exact fixture pixels (14.101 seconds).
+
+Numerical tests cover 50 MiB boundaries; the live large-image test did not transfer an exactly 50 MiB file. Both apps are updated. The Mac listener on port 7010 and Android foreground service were verified active after test cleanup.

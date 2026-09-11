@@ -284,6 +284,9 @@ class ClipForegroundService : Service() {
             if (!operation.isCurrent() || !prefs.syncEnabled || !prefs.autoSendEnabled) return null
             outbox.offer(PendingClip(payload, operation), SystemClock.elapsedRealtime())
         } catch (cancel: CancellationException) { throw cancel }
+        catch (_: com.clipsync.images.ClipboardImageOutputTooLarge) {
+            issue("Converted PNG exceeds 50 MiB; copy a smaller image")
+        }
         catch (_: Exception) { issue("Clipboard image unavailable; use explicit Share") }
         return snapshot
     }

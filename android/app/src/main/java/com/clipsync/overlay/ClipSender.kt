@@ -76,7 +76,7 @@ class ClipSender(
             ClipClient.validateToken(token)
             val secret = PairingApi.decodeSecret(pairingSecretB64)
             val client = clientFactory.pinnedClient(host, fpBase64Url).newBuilder()
-                .callTimeout(15, TimeUnit.SECONDS).build()
+                .callTimeout(callTimeoutSeconds(payload.data.length), TimeUnit.SECONDS).build()
             val body = payload.toJson()
             val request = Request.Builder().url(ClipClient.endpoint(host, port, "/inject"))
                 .header("Authorization", "Bearer $token")
@@ -105,6 +105,8 @@ class ClipSender(
     }
 
     companion object {
+        // Keep large uploads within the server's 60-second HMAC freshness window.
+        internal fun callTimeoutSeconds(encodedChars: Int): Long = if (encodedChars <= 16 * 1024 * 1024) 15 else 45
         private val sendLock = Any()
         private val JSON = "application/json; charset=utf-8".toMediaType()
         @Volatile var lastSentHash: Int = 0

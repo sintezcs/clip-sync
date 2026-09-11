@@ -29,7 +29,14 @@ data class ClipPayload(
         val limit = if (type == "text") MAX_TEXT_BYTES else MAX_IMAGE_BYTES
         require(data.length <= ((limit + 2) / 3) * 4 && data.length % 4 == 0) { "Payload too large or invalid base64" }
         val bytes = java.util.Base64.getDecoder().decode(data)
-        require(bytes.size <= limit && java.util.Base64.getEncoder().encodeToString(bytes) == data) { "Invalid payload encoding" }
+        require(bytes.size <= limit) { "Invalid payload encoding" }
+        // Java's decoder accepts nonzero padding bits. Check those directly instead of
+        // allocating a second ~67 MiB encoded String to round-trip a maximum-size image.
+        if (data.endsWith("==")) {
+            require(BASE64_ALPHABET.indexOf(data[data.length - 3]) and 15 == 0) { "Invalid payload encoding" }
+        } else if (data.endsWith("=")) {
+            require(BASE64_ALPHABET.indexOf(data[data.length - 2]) and 3 == 0) { "Invalid payload encoding" }
+        }
         if (type == "text") {
             Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                 .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(bytes))
@@ -48,12 +55,19 @@ data class ClipPayload(
     }
 
     companion object {
+        private const val BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         const val MAX_TEXT_BYTES = 1024 * 1024
-        const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+        const val MAX_IMAGE_BYTES = 50 * 1024 * 1024
         const val MAX_JSON_CHARS = ((MAX_IMAGE_BYTES + 2) / 3) * 4 + 4096
         val IMAGE_MIMES = setOf("image/png", "image/jpeg")
+        internal fun validateEnvelopeLength(length: Int) {
+            require(length in 0..MAX_JSON_CHARS) { "Frame too large" }
+        }
+        internal fun validateImageByteCount(length: Int) {
+            require(length in 0..MAX_IMAGE_BYTES) { "Image too large" }
+        }
         fun fromJson(raw: String): ClipPayload {
-            require(raw.length <= MAX_JSON_CHARS) { "Frame too large" }
+            validateEnvelopeLength(raw.length)
             val o = JSONObject(raw)
             fun string(key: String) = (o.get(key) as? String) ?: throw IllegalArgumentException("Invalid $key")
             val timestamp = o.get("ts")

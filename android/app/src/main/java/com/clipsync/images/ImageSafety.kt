@@ -9,7 +9,7 @@ object ImageSafety {
     }
 
     fun detectMime(bytes: ByteArray): String {
-        require(bytes.isNotEmpty() && bytes.size <= 8 * 1024 * 1024) { "Image too large or empty" }
+        require(bytes.isNotEmpty() && bytes.size <= com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES) { "Image too large or empty" }
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         require(options.outMimeType in setOf("image/png", "image/jpeg")) { "Invalid image format" }

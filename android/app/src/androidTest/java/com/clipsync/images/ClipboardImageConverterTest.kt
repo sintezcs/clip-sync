@@ -7,7 +7,6 @@ import android.graphics.ColorSpace
 import android.graphics.ImageDecoder
 import android.os.Bundle
 import java.nio.ByteBuffer
-import kotlin.math.abs
 import android.os.Build
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
@@ -16,7 +15,7 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 
 class ClipboardImageConverterTest {
-    @Test fun orientedHeicBecomesBoundedJpegWithDisplayOrientation() {
+    @Test fun orientedHeicBecomesBoundedPngWithDisplayOrientation() {
         assumeTrue(Build.VERSION.SDK_INT >= 28)
         val source = InstrumentationRegistry.getInstrumentation().context.assets.open("oriented-red.heic").use { it.readBytes() }
         val reference = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(source))) { decoder, _, _ ->
@@ -28,14 +27,14 @@ class ClipboardImageConverterTest {
             assertEquals(64, reference.height)
             for (mime in listOf("image/heic", "image/heif")) {
                 val image = ClipboardImageConverter.prepare(source, mime)
-                assertEquals("image/jpeg", image.mime)
+                assertEquals("image/png", image.mime)
                 assertTrue(image.bytes.size <= ClipboardImageConverter.MAX_BYTES)
                 val bitmap = requireNotNull(BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size))
                 try {
-                    // Source is 64x32 with orientation6; JPEG pixels must be physically rotated.
+                    // Source is 64x32 with orientation6; PNG pixels must be physically rotated.
                     assertEquals(32, bitmap.width)
                     assertEquals(64, bitmap.height)
-                    val diagnostics = "source=${rgbRanges(reference)} jpeg=${rgbRanges(bitmap)}"
+                    val diagnostics = "source=${rgbRanges(reference)} png=${rgbRanges(bitmap)}"
                     // These pixels belong solely to the checked-in synthetic fixture, never a user image.
                     InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
                         putString("syntheticHeicColorRanges", diagnostics)
@@ -45,10 +44,8 @@ class ClipboardImageConverterTest {
                         val converted = bitmap.getPixel(x, y)
                         assertTrue("Synthetic HEIC must remain predominantly red: $diagnostics",
                             Color.red(original) > 220 && Color.green(original) < 80 && Color.blue(original) < 40)
-                        assertTrue("JPEG must preserve decoded HEIC pixels at ($x,$y): $diagnostics",
-                            abs(Color.red(original) - Color.red(converted)) <= 8 &&
-                                abs(Color.green(original) - Color.green(converted)) <= 8 &&
-                                abs(Color.blue(original) - Color.blue(converted)) <= 8)
+                        assertEquals("PNG must preserve decoded HEIC pixels exactly at ($x,$y): $diagnostics",
+                            original, converted)
                     }
                 } finally { bitmap.recycle() }
             }
@@ -93,8 +90,18 @@ class ClipboardImageConverterTest {
         val output = CappedImageOutput(4)
         output.write(byteArrayOf(1, 2, 3, 4))
         assertArrayEquals(byteArrayOf(1, 2, 3, 4), output.toByteArray())
-        rejects { output.write(5) }
-        rejects { output.toByteArray() } // Native encoders cannot turn overflow into a partial success.
+        assertThrows(ClipboardImageOutputTooLarge::class.java) { output.write(5) }
+        assertThrows(ClipboardImageOutputTooLarge::class.java) { output.toByteArray() } // Native encoders cannot turn overflow into a partial success.
+    }
+
+    @Test fun cappedOutputPreservesBytesAcrossChunkBoundary() {
+        val expected = ByteArray(64 * 1024 + 3) { (it % 251).toByte() }
+        val output = CappedImageOutput(expected.size)
+        output.write(expected[0].toInt())
+        output.write(expected, 1, expected.size - 1)
+        assertArrayEquals(expected, output.toByteArray())
+        rejects { output.write(byteArrayOf(1), 0, 1) }
+        rejects { output.toByteArray() }
     }
 
     private fun rejects(block: () -> Unit) {

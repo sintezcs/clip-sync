@@ -77,3 +77,36 @@ extension ClipPayloadTests {
         }
     }
 }
+
+extension ClipPayloadTests {
+    func testImageBudgetIsFiftyMiBAndEnvelopeCoversBase64WithoutChangingText() throws {
+        XCTAssertEqual(ClipPayload.maxImageBytes, 52_428_800)
+        XCTAssertEqual(ClipPayload.maxJSONBytes, 69_909_164)
+        XCTAssertEqual(ClipPayload.maxTextBytes, 1_048_576)
+        XCTAssertEqual(ClipImageSafety.maxClipboardSourceBytes, ClipPayload.maxImageBytes)
+        // Verify exact boundaries without allocating a full decoded image or JSON copies.
+        try ClipImageSafety.validateEncodedSize(8 * 1024 * 1024 + 1)
+        try ClipImageSafety.validateEncodedSize(ClipPayload.maxImageBytes)
+        for count in [0, -1, ClipPayload.maxImageBytes + 1, Int.max] {
+            XCTAssertThrowsError(try ClipImageSafety.validateEncodedSize(count)) { error in
+                XCTAssertEqual(error as? ClipImageSafety.InvalidImage, .encodedSize)
+            }
+        }
+    }
+
+    func testPngConsumerAcceptsExactCapacityThenLatchesOverflow() {
+        // Exercise the actual ImageIO consumer implementation at a small injected limit.
+        let sink = ClipImageSafety.BoundedOutput(limit: 4)
+        let input: [UInt8] = [1, 2, 3, 4, 5]
+        input.withUnsafeBufferPointer { bytes in
+            XCTAssertEqual(sink.write(bytes.baseAddress!, count: 4), 4)
+            XCTAssertEqual(sink.data, Data([1, 2, 3, 4]))
+            XCTAssertFalse(sink.overflow)
+            XCTAssertEqual(sink.write(bytes.baseAddress!, count: 1), 0)
+            XCTAssertTrue(sink.overflow)
+            XCTAssertEqual(sink.write(bytes.baseAddress!, count: 0), 0)
+            XCTAssertTrue(sink.overflow)
+            XCTAssertEqual(sink.data.count, 4)
+        }
+    }
+}

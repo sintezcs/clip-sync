@@ -118,7 +118,7 @@ class ShizukuClipboardManager(private val context: Context) {
         val service = checkNotNull(userService) { "Clipboard helper unavailable" }
         val fd = service.openClipboardImage(snapshot.identity)
         return android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use {
-            com.clipsync.model.ClipPayloadBuilder.readBounded(it, 8 * 1024 * 1024)
+            com.clipsync.model.ClipPayloadBuilder.readBounded(it, com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES)
                 .also { bytes ->
                     val mime = requireNotNull(snapshot.mime)
                     require(mime in com.clipsync.images.ClipboardImageConverter.INPUT_MIMES)
@@ -178,7 +178,7 @@ class ShizukuClipboardManager(private val context: Context) {
             .tag("clipsync-clipboard-helper")
             .processNameSuffix("clipboard")
             .debuggable(false)
-            .version(5)
+            .version(6)
 
     private fun bindUserService() {
         updateState(State.BINDING)

@@ -62,7 +62,7 @@ class ClipboardUserService : IClipUserService.Stub() {
                     running.destroyForcibly()
                 }, 10, TimeUnit.SECONDS)
                 val bytes = running.inputStream.use {
-                    com.clipsync.model.ClipPayloadBuilder.readBounded(it, 8 * 1024 * 1024)
+                    com.clipsync.model.ClipPayloadBuilder.readBounded(it, com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES)
                 }
                 check(running.waitFor() == 0) { "Clipboard provider denied image access" }
                 ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { it.write(bytes) }

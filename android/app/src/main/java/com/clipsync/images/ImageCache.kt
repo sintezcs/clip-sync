@@ -15,13 +15,15 @@ import java.util.UUID
  */
 class ImageCache private constructor(
     private val context: Context?,
-    private val rootProvider: () -> File
+    private val rootProvider: () -> File,
+    private val markerProvider: () -> File?
 ) {
 
-    constructor(context: Context) : this(context, { File(context.cacheDir, DIR_NAME) })
+    constructor(context: Context) : this(context, { File(context.cacheDir, DIR_NAME) }, { File(context.cacheDir, "clipsync-current-image") })
 
     /** Test-only: inject a custom root folder without needing a Context. */
-    internal constructor(rootProvider: () -> File) : this(null, rootProvider)
+    internal constructor(rootProvider: () -> File) : this(null, rootProvider, { null })
+    internal constructor(rootProvider: () -> File, marker: File) : this(null, rootProvider, { marker })
 
     /** Absolute directory under which incoming images live. */
     val dir: File
@@ -51,24 +53,25 @@ class ImageCache private constructor(
         require(name.matches(Regex("[a-fA-F0-9-]+\\.(png|jpg|jpeg)")))
         require(File(dir, name).isFile)
         File(ctx.cacheDir, "clipsync-current-image").writeText(name)
+        enforceMaxSize()
     }
 
     /** Package-private file writer — exposed for tests. */
     internal fun writeToFile(bytes: ByteArray, ext: String): File {
-        require(bytes.size <= 8 * 1024 * 1024) { "Image too large" }
+        com.clipsync.model.ClipPayload.validateImageByteCount(bytes.size)
         val safeExt = ext.lowercase().ifBlank { "bin" }
         require(safeExt in setOf("png", "jpg", "jpeg", "bin")) { "Unsupported cache extension" }
         cleanupOlderThan()
         val file = File(dir, "${UUID.randomUUID()}.$safeExt")
         file.outputStream().use { it.write(bytes) }
-        enforceMaxSize()
+        enforceMaxSize(preserveCandidate = file)
         return file
     }
 
     /**
      * Evict oldest files until the cache directory is under [MAX_CACHE_SIZE_BYTES].
      */
-    fun enforceMaxSize() {
+    fun enforceMaxSize(preserveCandidate: File? = null) {
         val root = rootProvider()
         if (!root.exists() || !root.isDirectory) return
         val files = root.listFiles()?.sortedBy { it.lastModified() } ?: return
@@ -76,11 +79,11 @@ class ImageCache private constructor(
         var evicted = 0
         for (file in files) {
             if (totalSize <= MAX_CACHE_SIZE_BYTES) break
-            if (isProtected(file)) continue
+            if (isProtected(file) || file == preserveCandidate) continue
             val size = file.length()
             if (file.delete()) { totalSize -= size; evicted++ }
         }
-        if (evicted > 0) L.event("ImageCache", "evicted $evicted files to stay under ${MAX_CACHE_SIZE_BYTES / 1024 / 1024}MB")
+        if (evicted > 0 && context != null) L.event("ImageCache", "evicted $evicted files to stay under ${MAX_CACHE_SIZE_BYTES / 1024 / 1024}MB")
     }
 
     /**
@@ -97,12 +100,12 @@ class ImageCache private constructor(
                 if (f.delete()) deleted++
             }
         }
+        enforceMaxSize()
         return deleted
     }
 
     private fun isProtected(file: File): Boolean {
-        val ctx = context ?: return false
-        val marker = File(ctx.cacheDir, "clipsync-current-image")
+        val marker = markerProvider() ?: return false
         // Protect the last issued URI for its documented 24-hour lifetime.
         return System.currentTimeMillis() - file.lastModified() < DEFAULT_MAX_AGE_MS &&
             marker.exists() && marker.readText().take(80) == file.name

@@ -111,3 +111,11 @@ The final Android pairing revision also passed a fresh native Mac ↔ isolated-e
 ### Physical instrumentation cleanup
 
 `am instrument` can terminate the target app process and its foreground service when the runner exits. Preserved pairing/preferences do not prove the service remains running. After opt-in tests or the metadata probe on the personal Fold, relaunch normal `com.clipsync.app/.MainActivity`, wait for Ready, background it, and verify `dumpsys activity services com.clipsync.app` lists `ClipForegroundService` before asking the user to test. Do not start another instrumentation run during their manual test.
+
+## Large-image LAN verification
+
+The image cap is 50 MiB (binary), with a 69,909,164-byte JSON envelope. Start `scripts/native-large-lan-smoke.swift --confirm-system-clipboard` before the explicitly guarded `LargeLanSmokeTest`, with arguments `largeLanSmoke=true`, `expectedSerial=R5GL72NJTFM`, `expectedModel=SM-F971B`, and `expectedFingerprint=<trusted pin>`.
+
+The test generates valid PNG fixtures at runtime, asserts each exceeds 8 MiB, and checks exact pixel hashes in both directions. It preserves pairing. The initial run passed; see `/tmp/klippa-large-lan-{mac,android}.log`. Restore the normal app and service after instrumentation.
+
+`native-lan-smoke.swift --confirm-system-clipboard --heic-image`, paired with `RealLanSmokeTest` and `heicImage=true`, now checks PNG output exactly. The final default Mac suite passed 94 tests; Android passed 89 JVM tests and 17 standard instrumentation checks. See the handoff for full artifact paths and limitations.

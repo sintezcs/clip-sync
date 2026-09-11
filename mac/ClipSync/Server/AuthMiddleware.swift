@@ -19,7 +19,7 @@ struct AuthMiddleware<Context: RequestContext>: RouterMiddleware {
 
     init(tokenStore: TokenStore,
          hmacValidator: HMACValidator,
-         maxBodySize: Int = 12 * 1024 * 1024) {
+         maxBodySize: Int = ClipPayload.maxJSONBytes) {
         self.tokenStore = tokenStore
         self.hmacValidator = hmacValidator
         self.maxBodySize = maxBodySize

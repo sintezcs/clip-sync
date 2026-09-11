@@ -8,6 +8,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.RandomAccessFile
 
 /**
  * Unit tests for the non-Android parts of [ImageCache]. The Android
@@ -66,8 +67,36 @@ class ImageCacheTest {
     fun oversized_image_is_rejected_before_writing() {
         val root = tmp.newFolder("oversize")
         try {
-            newCache(root).writeToFile(ByteArray(8 * 1024 * 1024 + 1), "png")
+            newCache(root).writeToFile(ByteArray(com.clipsync.model.ClipPayload.MAX_IMAGE_BYTES + 1), "png")
         } finally { assertTrue(root.listFiles()!!.isEmpty()) }
+    }
+
+    @Test
+    fun largeReplacementSurvivesInsertionUntilAppliedAndCleanupPreservesCurrent() {
+        val root = tmp.newFolder("large-replacement")
+        val marker = File(tmp.root, "current-image")
+        val cache = ImageCache({ root }, marker)
+        val previous = File(root, "old.png")
+        val candidate = File(root, "new.png")
+        for (file in listOf(previous, candidate)) {
+            RandomAccessFile(file, "rw").use { it.setLength(50L * 1024 * 1024) }
+        }
+        marker.writeText(previous.name)
+        cache.enforceMaxSize(preserveCandidate = candidate)
+        assertTrue(previous.exists())
+        assertTrue(candidate.exists())
+        assertEquals(100L * 1024 * 1024, root.listFiles()!!.sumOf { it.length() })
+        // The same pin switch + enforcement is used by markApplied after a clipboard write.
+        marker.writeText(candidate.name)
+        cache.enforceMaxSize()
+        assertFalse(previous.exists())
+        assertTrue(candidate.exists())
+        val failedCandidate = File(root, "failed.png")
+        RandomAccessFile(failedCandidate, "rw").use { it.setLength(50L * 1024 * 1024) }
+        cache.enforceMaxSize(preserveCandidate = failedCandidate)
+        cache.cleanupOlderThan() // A discarded candidate must not displace the current URI.
+        assertTrue(candidate.exists())
+        assertFalse(failedCandidate.exists())
     }
 
     @Test

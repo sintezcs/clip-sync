@@ -91,16 +91,16 @@ func runSmoke(heicImage: Bool) throws {
     stage("Sending: Mac red PNG")
     pasteboard.clearContents()
     guard pasteboard.setData(red, forType: .png) else { throw SmokeError.clipboardWrite }
-    try waitFor(heicImage ? "Android HEIC converted to JPEG" : "Android blue PNG", seconds: 40) {
-        let imageType = heicImage ? NSPasteboard.PasteboardType("public.jpeg") : .png
+    try waitFor(heicImage ? "Android HEIC converted to PNG" : "Android blue PNG", seconds: 40) {
+        let imageType = NSPasteboard.PasteboardType.png
         guard let bytes = pasteboard.data(forType: imageType) else { return false }
-        return hasPixels(bytes, rgba: heicImage ? [255, 255, 255, 255] : [0, 0, 255, 255], tolerance: heicImage ? 8 : 0)
+        return hasPixels(bytes, rgba: heicImage ? [255, 255, 255, 255] : [0, 0, 255, 255], tolerance: 0)
     }
     Thread.sleep(forTimeInterval: 2)
     stage("Sending: completion marker")
     pasteboard.clearContents()
     guard pasteboard.setString("LAN_MAC_COMPLETE", forType: .string) else { throw SmokeError.clipboardWrite }
-    stage(heicImage ? "Success: LAN text, Mac PNG and Android HEIC converted to JPEG; completion marker left on Mac clipboard" : "Success: LAN bidirectional text and PNG; completion marker left on Mac clipboard")
+    stage(heicImage ? "Success: LAN text, Mac PNG and Android HEIC converted to PNG; completion marker left on Mac clipboard" : "Success: LAN bidirectional text and PNG; completion marker left on Mac clipboard")
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())

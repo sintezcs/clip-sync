@@ -76,7 +76,7 @@ struct ClipPayload: Codable, Sendable, Equatable {
     }
 
     static let maxTextBytes = 1024 * 1024
-    static let maxImageBytes = 8 * 1024 * 1024
+    static let maxImageBytes = 50 * 1024 * 1024
     static let maxJSONBytes = ((maxImageBytes + 2) / 3) * 4 + 4096
 
     static func decodeValidated(_ data: Data, nowMs: Int64 = currentTimestampMillis()) throws -> ClipPayload {
