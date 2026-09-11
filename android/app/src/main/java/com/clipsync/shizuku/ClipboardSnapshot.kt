@@ -36,10 +36,14 @@ data class ClipboardSnapshot(
             val sensitive = description.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true
             val item = clip.getItemAt(0)
             val uri = item.uri?.toString()
-            val mime = (0 until description.mimeTypeCount).map(description::getMimeType)
-                .firstOrNull { it.startsWith("image/") && uri != null }
-                ?: if (description.mimeTypeCount > 0) description.getMimeType(0) else null
             val rawText = item.text
+            val advertised = (0 until description.mimeTypeCount).map(description::getMimeType)
+            // Rich-text clips carry their plain representation in Item.text. Never parse HTML,
+            // read providers, or turn an intent/URI into text during automatic observation.
+            val plainRepresentation = rawText != null && uri == null && item.intent == null &&
+                advertised.any { it == "text/plain" || it == "text/html" }
+            val mime = advertised.firstOrNull { it.startsWith("image/") && uri != null }
+                ?: if (plainRepresentation) "text/plain" else advertised.firstOrNull()
             require(rawText == null || rawText.length <= MAX_TEXT_CHARS) { "Clipboard text exceeds automatic capture limit" }
             require(uri == null || uri.length <= 8192) { "Clipboard URI too long" }
             val text = rawText?.toString()

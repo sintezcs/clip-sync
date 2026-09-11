@@ -270,12 +270,14 @@ class ClipForegroundService : Service() {
         try {
             val payload = when {
                 snapshot.mime == "text/plain" && snapshot.text != null -> ClipPayloadBuilder.text(snapshot.text)
-                snapshot.mime == "image/png" || snapshot.mime == "image/jpeg" -> {
-                    val bytes = withContext(Dispatchers.IO) { manager.getClipboardImage(snapshot).also { ImageSafety.validate(it, snapshot.mime) } }
+                snapshot.mime in com.clipsync.images.ClipboardImageConverter.INPUT_MIMES -> {
+                    val image = withContext(Dispatchers.IO) {
+                        com.clipsync.images.ClipboardImageConverter.prepare(manager.getClipboardImage(snapshot), requireNotNull(snapshot.mime))
+                    }
                     // A slow provider must not enqueue an image after a newer user copy.
                     val current = readSnapshot(manager)
                     if (current?.identity != snapshot.identity) return snapshot
-                    ClipPayloadBuilder.image(snapshot.mime, bytes)
+                    ClipPayloadBuilder.image(image.mime, image.bytes)
                 }
                 else -> return snapshot
             }

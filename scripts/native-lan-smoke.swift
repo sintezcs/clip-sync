@@ -30,7 +30,7 @@ func waitFor(_ name: String, seconds: TimeInterval, predicate: () -> Bool) throw
 
 let rgbaInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
 
-func hasPixels(_ data: Data, rgba: [UInt8]) -> Bool {
+func hasPixels(_ data: Data, rgba: [UInt8], tolerance: Int = 0) -> Bool {
     guard rgba.count == 4, data.count <= 1024 * 1024,
           let source = CGImageSourceCreateWithData(data as CFData, nil),
           CGImageSourceGetCount(source) == 1,
@@ -49,7 +49,7 @@ func hasPixels(_ data: Data, rgba: [UInt8]) -> Bool {
         return true
     }
     return rendered && (0..<64).allSatisfy { pixel in
-        (0..<4).allSatisfy { bytes[pixel * 4 + $0] == rgba[$0] }
+        (0..<4).allSatisfy { abs(Int(bytes[pixel * 4 + $0]) - Int(rgba[$0])) <= tolerance }
     }
 }
 
@@ -73,7 +73,7 @@ func makeRedPNG() throws -> Data {
     return png
 }
 
-func runSmoke() throws {
+func runSmoke(heicImage: Bool) throws {
     let pasteboard = NSPasteboard.general
     let initialChangeCount = pasteboard.changeCount
     let red = try makeRedPNG()
@@ -91,24 +91,26 @@ func runSmoke() throws {
     stage("Sending: Mac red PNG")
     pasteboard.clearContents()
     guard pasteboard.setData(red, forType: .png) else { throw SmokeError.clipboardWrite }
-    try waitFor("Android blue PNG", seconds: 40) {
-        guard let png = pasteboard.data(forType: .png) else { return false }
-        return hasPixels(png, rgba: [0, 0, 255, 255])
+    try waitFor(heicImage ? "Android HEIC converted to JPEG" : "Android blue PNG", seconds: 40) {
+        let imageType = heicImage ? NSPasteboard.PasteboardType("public.jpeg") : .png
+        guard let bytes = pasteboard.data(forType: imageType) else { return false }
+        return hasPixels(bytes, rgba: heicImage ? [255, 255, 255, 255] : [0, 0, 255, 255], tolerance: heicImage ? 8 : 0)
     }
     Thread.sleep(forTimeInterval: 2)
     stage("Sending: completion marker")
     pasteboard.clearContents()
     guard pasteboard.setString("LAN_MAC_COMPLETE", forType: .string) else { throw SmokeError.clipboardWrite }
-    stage("Success: LAN bidirectional text and PNG; completion marker left on Mac clipboard")
+    stage(heicImage ? "Success: LAN text, Mac PNG and Android HEIC converted to JPEG; completion marker left on Mac clipboard" : "Success: LAN bidirectional text and PNG; completion marker left on Mac clipboard")
 }
 
-if CommandLine.arguments.dropFirst() != ["--confirm-system-clipboard"] {
-    fputs("Usage: native-lan-smoke --confirm-system-clipboard\n", stderr)
+let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments != ["--confirm-system-clipboard"] && arguments != ["--confirm-system-clipboard", "--heic-image"] {
+    fputs("Usage: native-lan-smoke --confirm-system-clipboard [--heic-image]\n", stderr)
     exit(2)
 }
 
 do {
-    try runSmoke()
+    try runSmoke(heicImage: arguments.contains("--heic-image"))
 } catch SmokeError.timedOut(let name) {
     fputs("Failed: timed out waiting for \(name)\n", stderr)
     exit(1)

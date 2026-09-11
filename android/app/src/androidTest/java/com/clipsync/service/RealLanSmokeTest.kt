@@ -1,12 +1,14 @@
 package com.clipsync.service
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -19,6 +21,8 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /** Explicit physical-phone LAN smoke test. Uses only the pairing established in the normal UI. */
@@ -37,8 +41,13 @@ class RealLanSmokeTest {
         require(!prefs.host.isNullOrBlank() && prefs.host !in setOf("127.0.0.1", "localhost", "::1", "10.0.2.2")) {
             "LAN smoke requires the existing LAN endpoint"
         }
+        val htmlText = args.getString("htmlText") == "true"
+        fun syntheticText(value: String): ClipData = if (htmlText) {
+            ClipData.newHtmlText("LAN smoke", value, "<b>$value</b>")
+        } else ClipData.newPlainText("LAN smoke", value)
         val syntheticTexts = setOf("LAN_ANDROID_READY", "LAN_MAC_TEXT_Ω", "LAN_ANDROID_TEXT_Ω", "LAN_MAC_COMPLETE")
         val syntheticUris = mutableSetOf<String>()
+        var heicFixture: File? = null
         val scenario = ActivityScenario.launch(MainActivity::class.java)
         try {
             eventually { Shizuku.pingBinder() }
@@ -53,7 +62,7 @@ class RealLanSmokeTest {
             val beforeText = ClipForegroundService.readiness.value.lastReceivedAt
             // Mac waits for READY, then allows the Activity to enter CREATED before publishing text.
             scenario.onActivity {
-                it.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("LAN smoke", "LAN_ANDROID_READY"))
+                it.getSystemService(ClipboardManager::class.java).setPrimaryClip(syntheticText("LAN_ANDROID_READY"))
             }
             scenario.moveToState(Lifecycle.State.CREATED)
             assertEquals("Response arrived before the Activity reached background", beforeText,
@@ -65,7 +74,7 @@ class RealLanSmokeTest {
             }
             val beforeImage = ClipForegroundService.readiness.value.lastReceivedAt
             scenario.onActivity {
-                it.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("LAN smoke", "LAN_ANDROID_TEXT_Ω"))
+                it.getSystemService(ClipboardManager::class.java).setPrimaryClip(syntheticText("LAN_ANDROID_TEXT_Ω"))
             }
             scenario.moveToState(Lifecycle.State.CREATED)
             assertEquals("Response arrived before the Activity reached background", beforeImage,
@@ -88,10 +97,20 @@ class RealLanSmokeTest {
                 bitmap.eraseColor(Color.BLUE)
                 ByteArrayOutputStream().also { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }.toByteArray()
             } finally { bitmap.recycle() }
-            val uri = ImageCache(context).writeImage(bytes, "png")
+            val heicImage = args.getString("heicImage") == "true"
+            val uri = if (heicImage) {
+                val fixture = File(ImageCache(context).dir, "${UUID.randomUUID()}.heic")
+                heicFixture = fixture
+                InstrumentationRegistry.getInstrumentation().context.assets.open("white.heic").use { source ->
+                    fixture.outputStream().use { output -> source.copyTo(output) }
+                }
+                FileProvider.getUriForFile(context, ImageCache.AUTHORITY, fixture)
+            } else ImageCache(context).writeImage(bytes, "png")
             syntheticUris += uri.toString()
             scenario.onActivity {
-                it.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newUri(it.contentResolver, "LAN smoke image", uri))
+                val clip = if (heicImage) ClipData(ClipDescription("LAN smoke image", arrayOf("image/heic")), ClipData.Item(uri))
+                    else ClipData.newUri(it.contentResolver, "LAN smoke image", uri)
+                it.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
             }
             scenario.moveToState(Lifecycle.State.CREATED)
             assertEquals("Response arrived before the Activity reached background", beforeComplete,
@@ -113,7 +132,10 @@ class RealLanSmokeTest {
                         clipboard.clearPrimaryClip()
                     }
                 }
-            } finally { scenario.close() }
+            } finally {
+                heicFixture?.delete()
+                scenario.close()
+            }
         }
     }
 

@@ -107,3 +107,7 @@ Android checkpoint `9c7489d` passed 72 JVM tests, seven standard instrumentation
 The final cancellation/commit-gate and typed-error guidance revision adds seven passing JVM regressions (84 total; `/tmp/klippa-android-final-pairing.log`). Normal LAN testing is waiting on the phone VPN route: `192.168.2.115` currently uses `tun0`, and TCP7010 times out despite the Mac listener and Bonjour being live. User action to allow LAN traffic or pause the VPN is pending. Do not treat the earlier USB bridge as normal LAN evidence.
 
 The final Android pairing revision also passed a fresh native Mac ↔ isolated-emulator bridge run: `build/native-verification/bridge-62g1t67u/success.json` confirms text and PNG in both directions; driver log `/tmp/klippa-final-bridge-driver.log`. This remains a named-pasteboard fixture, not the pending general-clipboard LAN test. Final debug app and test APK were successfully installed on the physical Fold.
+
+### Physical instrumentation cleanup
+
+`am instrument` can terminate the target app process and its foreground service when the runner exits. Preserved pairing/preferences do not prove the service remains running. After opt-in tests or the metadata probe on the personal Fold, relaunch normal `com.clipsync.app/.MainActivity`, wait for Ready, background it, and verify `dumpsys activity services com.clipsync.app` lists `ClipForegroundService` before asking the user to test. Do not start another instrumentation run during their manual test.

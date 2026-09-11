@@ -119,7 +119,12 @@ class ShizukuClipboardManager(private val context: Context) {
         val fd = service.openClipboardImage(snapshot.identity)
         return android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use {
             com.clipsync.model.ClipPayloadBuilder.readBounded(it, 8 * 1024 * 1024)
-                .also { bytes -> com.clipsync.images.ImageSafety.validate(bytes, requireNotNull(snapshot.mime)) }
+                .also { bytes ->
+                    val mime = requireNotNull(snapshot.mime)
+                    require(mime in com.clipsync.images.ClipboardImageConverter.INPUT_MIMES)
+                    // HEIF decode/validation happens once in the outbound converter, off main.
+                    if (mime == "image/png" || mime == "image/jpeg") com.clipsync.images.ImageSafety.validate(bytes, mime)
+                }
         }
     }
 
@@ -143,12 +148,12 @@ class ShizukuClipboardManager(private val context: Context) {
         runCatching { userService?.setClipboardUri(uri, mime) }
     }
 
-    fun destroy() {
+    fun destroy(stopUserService: Boolean = true) {
         handler.removeCallbacksAndMessages(null)
         try { Shizuku.removeBinderReceivedListener(binderReceivedListener) } catch (_: Exception) {}
         try { Shizuku.removeBinderDeadListener(binderDeadListener) } catch (_: Exception) {}
         try { Shizuku.removeRequestPermissionResultListener(permissionResultListener) } catch (_: Exception) {}
-        unbindUserService()
+        unbindUserService(stopUserService)
         userService = null
     }
 
@@ -173,7 +178,7 @@ class ShizukuClipboardManager(private val context: Context) {
             .tag("clipsync-clipboard-helper")
             .processNameSuffix("clipboard")
             .debuggable(false)
-            .version(3)
+            .version(5)
 
     private fun bindUserService() {
         updateState(State.BINDING)
@@ -185,9 +190,9 @@ class ShizukuClipboardManager(private val context: Context) {
         }
     }
 
-    private fun unbindUserService() {
+    private fun unbindUserService(remove: Boolean = true) {
         try {
-            Shizuku.unbindUserService(buildServiceArgs(), serviceConnection, true)
+            Shizuku.unbindUserService(buildServiceArgs(), serviceConnection, remove)
         } catch (_: Exception) { }
     }
 

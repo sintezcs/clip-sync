@@ -41,7 +41,7 @@ class ClipboardUserService : IClipUserService.Stub() {
     override fun openClipboardImage(expectedIdentity: String): ParcelFileDescriptor {
         val snapshot = ClipboardSnapshot.fromClip(getPrimaryClipOrThrow())
         require(snapshot.identity == expectedIdentity && !snapshot.sensitive) { "Clipboard changed" }
-        require(snapshot.mime in setOf("image/png", "image/jpeg")) { "Unsupported clipboard image" }
+        require(snapshot.mime in setOf("image/png", "image/jpeg", "image/heic", "image/heif")) { "Unsupported clipboard image" }
         val uri = requireNotNull(snapshot.uri)
         require(android.net.Uri.parse(uri).scheme == "content") { "Only content images are supported" }
         check(imagePermit.tryAcquire()) { "Image read already in progress" }

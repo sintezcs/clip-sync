@@ -82,3 +82,19 @@ Independent review found a delayed Android pairing response could override a lat
 Final revision build evidence: `/tmp/klippa-android-final-pairing.log` reports debug/release assembly, test APK, 84 JVM tests and lint successful (zero lint errors). `/tmp/klippa-android-pairing-instrumentation.log` reports eight executed checks plus four opt-in skips (`OK (12 tests)`) on `emulator-5580`, never the other task emulator.
 
 The final Android pairing revision also passed a fresh native Mac ↔ isolated-emulator bridge run: `build/native-verification/bridge-62g1t67u/success.json` confirms text and PNG in both directions; driver log `/tmp/klippa-final-bridge-driver.log`. This remains a named-pasteboard fixture, not the pending general-clipboard LAN test. Final debug app and test APK were successfully installed on the physical Fold.
+
+## Follow-up: actual LAN and rich-text clipboard copies
+
+The user completed normal pairing. The real system-clipboard LAN smoke passed plaintext and PNG both directions, including Android background receipt: `/tmp/klippa-lan-mac.log` and `/tmp/klippa-lan-android.log` (one opt-in test,12.603s). The prior VPN blocker is resolved for this run.
+
+User reported Telegram message and Samsung Gallery image copies failing. Review found that HTML clipboard items with an existing plain-text representation were silently skipped. The `htmlText=true` LAN regression failed against installed checkpoint2125a7e (`/tmp/klippa-html-red-*.log`) then passed after snapshot normalization (`/tmp/klippa-html-green-*.log`,11.535s). Only advertised HTML/plain text with existing Item.text and no URI/intent is normalized; sensitive content remains excluded. Helper version4 ensures updated code after install. Actual user Telegram/Gallery provider verification remains in progress and must not be inferred from synthetic-format success.
+
+Actual Telegram metadata confirmed `text/html`,non-sensitive,existing plain text,no URI. A second manual attempt immediately after instrumentation was inconclusive because the runner terminates the app/service. Normal ClipSync was relaunched and Ready+active foreground service verified before the next manual attempt. Always restore the normal app after personal-device instrumentation; retaining preferences alone is insufficient.
+
+User confirmed Telegram → Mac works after the rich-text fix with normal service restored. Updated debug app is installed. JVM tests remain84 passing; default instrumentation now13 executed+5 opt-in skips (`OK (18 tests)`, `/tmp/klippa-richtext-instrumentation.log`). Debug/test/release builds and lint passed (`/tmp/klippa-richtext-build.log`, `/tmp/klippa-richtext-release.log`). Samsung Gallery copy is the remaining manual provider check.
+
+### Samsung Gallery HEIC follow-up
+
+The metadata-only probe identified actual Gallery input as `image/heic`,non-sensitive with a URI (`/tmp/klippa-gallery-metadata.log`). Added Android9+ bounded HEIC/HEIF→JPEG conversion through ImageDecoder (orientation/software/sRGB,8MiBinput/output,8192side/24MP,strictcurrentURIidentity),helperversion5. Old-app synthetic HEIC LAN failed (`/tmp/klippa-heic-red-*.log`); updated app passed (`/tmp/klippa-heic-green-*.log`,12.012s). Physical converter tests passed3 cases; isolated-emulator suite now16 executed+5 opt-in skips (`OK (21 tests)`). Debug/release/JVM/lint passed `/tmp/klippa-heic-final-build.log`. The initial synthetic color assertion was corrected to compare the JPEG against the decoded HEIC source; source HEIC itself differed from uncompressed ideal due to encoding/color conversion. A neutral fixture removes chroma ambiguity in the LAN check.
+
+Normalapp Ready and active foreground service were verified after all physical instrumentation before asking user to retry Gallery. Actual Gallery paste confirmation is pending; synthetic success is not its substitute.
